@@ -1,0 +1,11 @@
+# .NET build artifacts
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+
+# IDE
+.idea/
+.alma-snapshots
