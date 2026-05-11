@@ -23,7 +23,7 @@ internal static class PrivilegeHelper
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    public static ElevationRequestResult TryRelaunchElevatedForStart(out string message)
+    public static ElevationRequestResult TryRelaunchElevatedForStart(string coreDisplayName, out string message)
     {
         var exePath = Application.ExecutablePath;
         if (string.IsNullOrEmpty(exePath))
@@ -49,7 +49,7 @@ internal static class PrivilegeHelper
         }
         catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorCancelled)
         {
-            message = "Starting this configuration requires administrator permission because it uses a TUN inbound.";
+            message = $"{coreDisplayName} configuration requires administrator permission because it uses TUN.";
             return ElevationRequestResult.Cancelled;
         }
         catch (Exception ex)

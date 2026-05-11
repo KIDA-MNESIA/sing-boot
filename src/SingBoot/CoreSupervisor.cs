@@ -37,9 +37,8 @@ public readonly struct CoreEvent
 }
 
 /// <summary>
-/// Background thread that manages the sing-box process lifecycle.
+/// Background thread that manages the selected core process lifecycle.
 /// Uses a Windows Job Object to ensure the child process is killed when the parent exits.
-/// Feeds sing-box config via stdin pipe (<c>sing-box run -c stdin</c>).
 /// </summary>
 public sealed class CoreSupervisor : IDisposable
 {
@@ -48,7 +47,6 @@ public sealed class CoreSupervisor : IDisposable
 
     private static readonly Regex AnsiEscapeRegex = new(@"\x1B\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
 
-    private readonly string _exePath;
     private readonly BlockingCollection<SupervisorCommand> _queue = new(10);
     private readonly Thread _thread;
     private readonly object _stderrLock = new();
@@ -60,6 +58,7 @@ public sealed class CoreSupervisor : IDisposable
     private Thread? _stderrReaderThread;
     private DateTime _startupDeadlineUtc = DateTime.MinValue;
     private CoreState _state = CoreState.Stopped;
+    private string _currentCoreDisplayName = "core";
     private bool _disposed;
 
     public event Action<CoreEvent>? OnEvent;
@@ -67,22 +66,20 @@ public sealed class CoreSupervisor : IDisposable
     public CoreState State => _state;
     public uint ProcessId => _processId;
 
-    public CoreSupervisor(string exePath)
+    public CoreSupervisor()
     {
-        _exePath = exePath;
-
         _thread = new Thread(Run) { IsBackground = true, Name = "CoreSupervisor" };
         _thread.Start();
     }
 
-    public void RequestStart(string configJson)
+    public void RequestStart(CoreStartRequest startRequest)
     {
-        _queue.TryAdd(new SupervisorCommand(CommandKind.Start, configJson));
+        _queue.TryAdd(new SupervisorCommand(CommandKind.Start, startRequest));
     }
 
     public void RequestStop()
     {
-        _queue.TryAdd(new SupervisorCommand(CommandKind.Stop, ""));
+        _queue.TryAdd(new SupervisorCommand(CommandKind.Stop, null));
     }
 
     /// <summary>
@@ -130,7 +127,8 @@ public sealed class CoreSupervisor : IDisposable
         switch (cmd.Kind)
         {
             case CommandKind.Start:
-                DoStart(cmd.ConfigJson);
+                if (cmd.StartRequest is not null)
+                    DoStart(cmd.StartRequest);
                 break;
             case CommandKind.Stop:
                 DoStopGraceful();
@@ -138,11 +136,12 @@ public sealed class CoreSupervisor : IDisposable
         }
     }
 
-    private void DoStart(string configJson)
+    private void DoStart(CoreStartRequest request)
     {
         DoStopGraceful();
         ClearCapturedStderr();
         SetStateAndNotify(CoreState.Starting);
+        _currentCoreDisplayName = request.DisplayName;
 
         IntPtr jobHandle = IntPtr.Zero;
         IntPtr processHandle = IntPtr.Zero;
@@ -156,8 +155,8 @@ public sealed class CoreSupervisor : IDisposable
 
         try
         {
-            if (!File.Exists(_exePath))
-                throw new FileNotFoundException("sing-box executable not found.");
+            if (!File.Exists(request.ExecutablePath))
+                throw new FileNotFoundException($"{request.DisplayName} executable not found.", request.ExecutablePath);
 
             jobHandle = NativeMethods.CreateJobObject(IntPtr.Zero, null);
             if (jobHandle == IntPtr.Zero)
@@ -204,8 +203,8 @@ public sealed class CoreSupervisor : IDisposable
                 hStdError = stderrWrite
             };
 
-            var cmdLine = $"\"{_exePath}\" run -c stdin";
-            var workDir = Path.GetDirectoryName(_exePath) ?? ".";
+            var cmdLine = request.CommandLine;
+            var workDir = request.WorkingDirectory;
 
             if (!NativeMethods.CreateProcess(null, cmdLine, IntPtr.Zero, IntPtr.Zero,
                     bInheritHandles: true,
@@ -232,8 +231,11 @@ public sealed class CoreSupervisor : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed.");
             SafeCloseHandle(ref threadHandle);
 
-            var configBytes = Encoding.UTF8.GetBytes(configJson);
-            WriteAll(stdinWrite, configBytes);
+            if (!string.IsNullOrEmpty(request.StandardInputContent))
+            {
+                var configBytes = Encoding.UTF8.GetBytes(request.StandardInputContent);
+                WriteAll(stdinWrite, configBytes);
+            }
             SafeCloseHandle(ref stdinWrite);
 
             _jobHandle = jobHandle;
@@ -267,6 +269,7 @@ public sealed class CoreSupervisor : IDisposable
             _startupDeadlineUtc = DateTime.MinValue;
 
             var message = BuildFailureMessage(
+                request.DisplayName,
                 duringStartup: true,
                 stderrSummary: GetCapturedStderrSummary(),
                 exitCode: exitCode,
@@ -365,6 +368,7 @@ public sealed class CoreSupervisor : IDisposable
 
     private void HandleObservedProcessExit(bool duringStartup)
     {
+        var coreDisplayName = _currentCoreDisplayName;
         var exitCode = TryGetExitCode(_processHandle);
         DrainStderrReader(TimeSpan.FromMilliseconds(500));
         var summary = GetCapturedStderrSummary();
@@ -374,7 +378,7 @@ public sealed class CoreSupervisor : IDisposable
         var fallback = duringStartup
             ? "process exited before becoming ready."
             : "process exited without additional error output.";
-        var message = BuildFailureMessage(duringStartup, summary, exitCode, fallback);
+        var message = BuildFailureMessage(coreDisplayName, duringStartup, summary, exitCode, fallback);
         SetStateAndNotify(CoreState.Failed, message);
     }
 
@@ -488,9 +492,9 @@ public sealed class CoreSupervisor : IDisposable
         return sanitized.Replace("\0", "").Trim();
     }
 
-    private static string BuildFailureMessage(bool duringStartup, string stderrSummary, uint? exitCode, string fallbackMessage)
+    private static string BuildFailureMessage(string coreDisplayName, bool duringStartup, string stderrSummary, uint? exitCode, string fallbackMessage)
     {
-        var prefix = duringStartup ? "sing-box start failed" : "sing-box process exited unexpectedly";
+        var prefix = duringStartup ? $"{coreDisplayName} start failed" : $"{coreDisplayName} process exited unexpectedly";
         var detail = string.IsNullOrWhiteSpace(stderrSummary) ? fallbackMessage : stderrSummary;
 
         return exitCode.HasValue
@@ -542,12 +546,12 @@ public sealed class CoreSupervisor : IDisposable
     private readonly struct SupervisorCommand
     {
         public CommandKind Kind { get; }
-        public string ConfigJson { get; }
+        public CoreStartRequest? StartRequest { get; }
 
-        public SupervisorCommand(CommandKind kind, string configJson)
+        public SupervisorCommand(CommandKind kind, CoreStartRequest? startRequest)
         {
             Kind = kind;
-            ConfigJson = configJson;
+            StartRequest = startRequest;
         }
     }
 

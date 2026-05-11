@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace SingBoot;
 
 /// <summary>
-/// Main application controller. Manages sing-box config, process supervisor lifecycle,
+/// Main application controller. Manages core config, process supervisor lifecycle,
 /// and exposes Start/Stop/Shutdown operations for the UI.
 /// </summary>
 internal enum StartPreparationResult
@@ -15,19 +15,19 @@ internal enum StartPreparationResult
 
 internal sealed class SingBootApp : IDisposable
 {
-    private const string CoreExecutableName = "sing-box.exe";
-    private const string ConfigFileName = "config.json";
-
     private readonly CoreSupervisor _supervisor;
-    private readonly string _corePath;
-    private readonly string _configPath;
-    private SingBoxConfig? _config;
+    private readonly string _baseDirectory;
+    private CoreProfile? _profile;
+    private CoreConfig? _config;
     private bool _disposed;
 
-    public SingBoxConfig? Config => _config;
+    public CoreProfile? Profile => _profile;
+    public CoreConfig? Config => _config;
     public CoreState State => _supervisor.State;
     public bool IsRunning => _supervisor.State == CoreState.Running;
     public bool RequiresElevation => _config?.RequiresElevation == true;
+    public string CoreDisplayName => _profile?.DisplayName ?? "core";
+    public string TrayText => _profile is null ? "sing-boot" : $"sing-boot - {_profile.DisplayName}";
 
     /// <summary>
     /// Raised on the UI thread when the core state changes or an error occurs.
@@ -36,29 +36,26 @@ internal sealed class SingBootApp : IDisposable
 
     public SingBootApp(LaunchMode launchMode)
     {
-        _corePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, CoreExecutableName));
-        _configPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ConfigFileName));
+        _baseDirectory = Path.GetFullPath(AppContext.BaseDirectory);
+        CoreDiscovery.TryDiscover(_baseDirectory, out _profile, out _);
 
-        if (!File.Exists(_corePath))
-            throw new FileNotFoundException("sing-box executable not found.", _corePath);
-
-        _supervisor = new CoreSupervisor(_corePath);
+        _supervisor = new CoreSupervisor();
         _supervisor.OnEvent += HandleCoreEvent;
     }
 
     /// <summary>
-    /// Start the sing-box process.
+    /// Start the selected core process.
     /// </summary>
     public void Start()
     {
-        if (_config is null)
+        if (_profile is null || _config is null)
             throw new InvalidOperationException("Configuration has not been loaded.");
 
-        _supervisor.RequestStart(_config.JsonContent);
+        _supervisor.RequestStart(_profile.CreateStartRequest(_config));
     }
 
     /// <summary>
-    /// Stop the sing-box process.
+    /// Stop the selected core process.
     /// </summary>
     public void Stop()
     {
@@ -87,7 +84,7 @@ internal sealed class SingBootApp : IDisposable
 
         if (RequiresElevation && !PrivilegeHelper.IsAdministrator())
         {
-            var elevation = PrivilegeHelper.TryRelaunchElevatedForStart(out message);
+            var elevation = PrivilegeHelper.TryRelaunchElevatedForStart(CoreDisplayName, out message);
             switch (elevation)
             {
                 case ElevationRequestResult.Started:
@@ -147,9 +144,22 @@ internal sealed class SingBootApp : IDisposable
 
     private bool TryReloadConfig(out string message)
     {
+        if (!CoreDiscovery.TryDiscover(_baseDirectory, out var profile, out message))
+        {
+            _profile = null;
+            _config = null;
+            return false;
+        }
+        if (profile is null)
+        {
+            message = "Unable to find a supported core layout.";
+            return false;
+        }
+
         try
         {
-            _config = SingBoxConfig.Load(_configPath);
+            _profile = profile;
+            _config = CoreConfig.Load(profile);
             message = "";
             return true;
         }
@@ -159,14 +169,20 @@ internal sealed class SingBootApp : IDisposable
                 ? "Unknown error while loading configuration."
                 : ex.Message;
 
-            message = $"Unable to load configuration: {detail}";
+            message = $"Unable to load {profile.DisplayName} configuration: {detail}";
             return false;
         }
     }
 
     private bool HasConflictingCoreProcess(out string message)
     {
-        foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(_corePath)))
+        if (_profile is null)
+        {
+            message = "";
+            return false;
+        }
+
+        foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(_profile.ExecutablePath)))
         {
             using (process)
             {
@@ -183,7 +199,7 @@ internal sealed class SingBootApp : IDisposable
                 if (_supervisor.ProcessId != 0 && process.Id == (int)_supervisor.ProcessId)
                     continue;
 
-                message = "Another sing-box process is already running. Stop it before starting from the tray.";
+                message = $"Another {_profile.DisplayName} process is already running. Stop it before starting from the tray.";
                 return true;
             }
         }

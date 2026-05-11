@@ -48,7 +48,7 @@ internal sealed class MainForm : Form
         {
             ContextMenuStrip = menu,
             Icon = _iconStopped,
-            Text = "sing-boot",
+            Text = _app.TrayText,
             Visible = true
         };
         _trayIcon.MouseClick += OnTrayClick;
@@ -180,6 +180,7 @@ internal sealed class MainForm : Form
             return;
 
         var preparation = _app.PrepareForStart(out var message);
+        UpdateUI(_app.State);
         switch (preparation)
         {
             case StartPreparationResult.Ready:
@@ -201,6 +202,7 @@ internal sealed class MainForm : Form
     {
         var running = state == CoreState.Running;
 
+        _trayIcon.Text = _app.TrayText;
         _trayIcon.Icon = running ? _iconRunning : _iconStopped;
         _miStartStop.Text = running ? "Stop" : "Start";
         _miStartStop.Enabled = state != CoreState.Starting && state != CoreState.Stopping;
