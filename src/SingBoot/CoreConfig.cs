@@ -1,12 +1,10 @@
 using System.Collections;
 using System.Web.Script.Serialization;
-using YamlDotNet.Core;
-using YamlDotNet.RepresentationModel;
 
 namespace SingBoot;
 
 /// <summary>
-/// Holds a validated core configuration and any stdin payload required to start it.
+/// Holds core configuration details and any stdin payload required to start it.
 /// </summary>
 public sealed class CoreConfig
 {
@@ -52,21 +50,7 @@ public sealed class CoreConfig
         if (string.IsNullOrWhiteSpace(rawYaml))
             throw new InvalidOperationException("Configuration file is empty.");
 
-        var yaml = new YamlStream();
-        try
-        {
-            using var reader = new StringReader(rawYaml);
-            yaml.Load(reader);
-        }
-        catch (YamlException ex)
-        {
-            throw new InvalidOperationException("Configuration file contains invalid YAML.", ex);
-        }
-
-        if (yaml.Documents.Count == 0 || yaml.Documents[0].RootNode is not YamlMappingNode root)
-            throw new InvalidOperationException("Configuration file is empty or contains invalid YAML.");
-
-        return new CoreConfig(null, DetectMihomoTun(root));
+        return new CoreConfig(null, DetectMihomoTun(rawYaml));
     }
 
     private static bool DetectSingBoxTunInbound(string normalizedJson)
@@ -103,30 +87,26 @@ public sealed class CoreConfig
         return false;
     }
 
-    private static bool DetectMihomoTun(YamlMappingNode root)
+    private static bool DetectMihomoTun(string rawYaml)
     {
-        if (TryGetMappingValue(root, "tun", out var tunNode) &&
-            tunNode is YamlMappingNode tun &&
-            TryGetMappingValue(tun, "enable", out var enableNode) &&
-            IsTruthyScalar(enableNode))
-        {
-            return true;
-        }
+        var lines = ReadYamlLines(rawYaml);
 
-        if (!TryGetMappingValue(root, "listeners", out var listenersNode) ||
-            listenersNode is not YamlSequenceNode listeners)
+        for (var i = 0; i < lines.Count; i++)
         {
-            return false;
-        }
-
-        foreach (var listenerNode in listeners.Children)
-        {
-            if (listenerNode is not YamlMappingNode listener)
+            var line = lines[i];
+            if (line.Indent != 0 || !TryParseYamlPair(line.Text, out var key, out var value))
                 continue;
 
-            if (TryGetMappingValue(listener, "type", out var typeNode) &&
-                typeNode is YamlScalarNode typeScalar &&
-                string.Equals(typeScalar.Value, "tun", StringComparison.OrdinalIgnoreCase))
+            if (IsYamlKey(key, "tun") &&
+                (InlineMappingHasScalar(value, "enable", IsTruthyScalar) ||
+                 BlockHasScalar(lines, i + 1, line.Indent, "enable", IsTruthyScalar)))
+            {
+                return true;
+            }
+
+            if (IsYamlKey(key, "listeners") &&
+                (InlineMappingHasScalar(value, "type", IsTunScalar) ||
+                 BlockHasScalar(lines, i + 1, line.Indent, "type", IsTunScalar)))
             {
                 return true;
             }
@@ -135,30 +115,300 @@ public sealed class CoreConfig
         return false;
     }
 
-    private static bool TryGetMappingValue(YamlMappingNode mapping, string key, out YamlNode value)
+    private static List<YamlLine> ReadYamlLines(string rawYaml)
     {
-        foreach (var child in mapping.Children)
+        var lines = new List<YamlLine>();
+        using var reader = new StringReader(rawYaml);
+        string? rawLine;
+
+        while ((rawLine = reader.ReadLine()) is not null)
         {
-            if (child.Key is YamlScalarNode scalar &&
-                string.Equals(scalar.Value, key, StringComparison.OrdinalIgnoreCase))
+            if (rawLine.Length > 0 && rawLine[0] == '\uFEFF')
+                rawLine = rawLine.Substring(1);
+
+            var withoutComment = StripYamlComment(rawLine);
+            var indent = CountYamlIndent(withoutComment);
+            var text = withoutComment.Substring(Math.Min(indent, withoutComment.Length)).TrimEnd();
+            if (string.IsNullOrWhiteSpace(text) ||
+                text == "---" ||
+                text == "...")
             {
-                value = child.Value;
-                return true;
+                continue;
             }
+
+            lines.Add(new YamlLine(indent, text.TrimStart()));
         }
 
-        value = null!;
+        return lines;
+    }
+
+    private static bool BlockHasScalar(
+        IReadOnlyList<YamlLine> lines,
+        int startIndex,
+        int parentIndent,
+        string targetKey,
+        Func<string, bool> valuePredicate)
+    {
+        for (var i = startIndex; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (line.Indent <= parentIndent && !line.Text.StartsWith("-", StringComparison.Ordinal))
+                return false;
+
+            if (TryParseYamlPair(line.Text, out var key, out var value) &&
+                IsYamlKey(key, targetKey) &&
+                valuePredicate(value))
+                return true;
+        }
+
         return false;
     }
 
-    private static bool IsTruthyScalar(YamlNode node)
+    private static bool InlineMappingHasScalar(string value, string targetKey, Func<string, bool> valuePredicate)
     {
-        if (node is not YamlScalarNode scalar || scalar.Value is null)
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
             return false;
 
-        return scalar.Value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-               scalar.Value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
-               scalar.Value.Equals("on", StringComparison.OrdinalIgnoreCase) ||
-               scalar.Value.Equals("1", StringComparison.OrdinalIgnoreCase);
+        trimmed = trimmed.Trim('{', '}', '[', ']');
+        foreach (var entry in SplitInlineYamlEntries(trimmed))
+        {
+            if (TryParseYamlPair(entry, out var key, out var entryValue) &&
+                IsYamlKey(key, targetKey) &&
+                valuePredicate(entryValue))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> SplitInlineYamlEntries(string value)
+    {
+        var start = 0;
+        var nested = 0;
+        var inSingleQuote = false;
+        var inDoubleQuote = false;
+
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (ch == '\'' && !inDoubleQuote)
+            {
+                if (inSingleQuote && i + 1 < value.Length && value[i + 1] == '\'')
+                {
+                    i++;
+                    continue;
+                }
+
+                inSingleQuote = !inSingleQuote;
+                continue;
+            }
+
+            if (ch == '"' && !inSingleQuote && !IsEscaped(value, i))
+            {
+                inDoubleQuote = !inDoubleQuote;
+                continue;
+            }
+
+            if (inSingleQuote || inDoubleQuote)
+                continue;
+
+            if (ch == '{' || ch == '[')
+            {
+                nested++;
+                continue;
+            }
+
+            if ((ch == '}' || ch == ']') && nested > 0)
+            {
+                nested--;
+                continue;
+            }
+
+            if (ch != ',' || nested != 0)
+                continue;
+
+            var entry = value.Substring(start, i - start).Trim();
+            if (entry.Length > 0)
+                yield return entry;
+
+            start = i + 1;
+        }
+
+        var lastEntry = value.Substring(start).Trim();
+        if (lastEntry.Length > 0)
+            yield return lastEntry;
+    }
+
+    private static bool TryParseYamlPair(string text, out string key, out string value)
+    {
+        var normalized = text.Trim();
+        if (normalized.StartsWith("-", StringComparison.Ordinal))
+            normalized = normalized.Substring(1).TrimStart();
+
+        var colonIndex = FindUnquotedColon(normalized);
+        if (colonIndex <= 0)
+        {
+            key = "";
+            value = "";
+            return false;
+        }
+
+        key = NormalizeYamlScalar(normalized.Substring(0, colonIndex));
+        value = normalized.Substring(colonIndex + 1).Trim();
+        return key.Length > 0;
+    }
+
+    private static int FindUnquotedColon(string value)
+    {
+        var inSingleQuote = false;
+        var inDoubleQuote = false;
+
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (ch == '\'' && !inDoubleQuote)
+            {
+                if (inSingleQuote && i + 1 < value.Length && value[i + 1] == '\'')
+                {
+                    i++;
+                    continue;
+                }
+
+                inSingleQuote = !inSingleQuote;
+                continue;
+            }
+
+            if (ch == '"' && !inSingleQuote && !IsEscaped(value, i))
+            {
+                inDoubleQuote = !inDoubleQuote;
+                continue;
+            }
+
+            if (ch == ':' && !inSingleQuote && !inDoubleQuote)
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static string StripYamlComment(string line)
+    {
+        var inSingleQuote = false;
+        var inDoubleQuote = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (ch == '\'' && !inDoubleQuote)
+            {
+                if (inSingleQuote && i + 1 < line.Length && line[i + 1] == '\'')
+                {
+                    i++;
+                    continue;
+                }
+
+                inSingleQuote = !inSingleQuote;
+                continue;
+            }
+
+            if (ch == '"' && !inSingleQuote && !IsEscaped(line, i))
+            {
+                inDoubleQuote = !inDoubleQuote;
+                continue;
+            }
+
+            if (ch == '#' && !inSingleQuote && !inDoubleQuote && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                return line.Substring(0, i);
+        }
+
+        return line;
+    }
+
+    private static int CountYamlIndent(string line)
+    {
+        var count = 0;
+        foreach (var ch in line)
+        {
+            if (ch == ' ')
+            {
+                count++;
+                continue;
+            }
+
+            if (ch == '\t')
+            {
+                count += 2;
+                continue;
+            }
+
+            break;
+        }
+
+        return count;
+    }
+
+    private static bool IsYamlKey(string value, string expected)
+    {
+        return string.Equals(NormalizeYamlScalar(value), expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTruthyScalar(string value)
+    {
+        var normalized = NormalizeYamlScalar(value);
+        return normalized.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("on", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("1", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTunScalar(string value)
+    {
+        return string.Equals(NormalizeYamlScalar(value), "tun", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeYamlScalar(string value)
+    {
+        var normalized = value.Trim().TrimEnd(',');
+        if (normalized.StartsWith("!!", StringComparison.Ordinal))
+        {
+            var tagEnd = normalized.IndexOfAny(new[] { ' ', '\t' });
+            if (tagEnd >= 0)
+                normalized = normalized.Substring(tagEnd + 1).TrimStart();
+        }
+
+        if (normalized.Length >= 2 &&
+            ((normalized[0] == '\'' && normalized[normalized.Length - 1] == '\'') ||
+             (normalized[0] == '"' && normalized[normalized.Length - 1] == '"')))
+        {
+            var quote = normalized[0];
+            normalized = normalized.Substring(1, normalized.Length - 2);
+            return quote == '\''
+                ? normalized.Replace("''", "'")
+                : normalized.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        return normalized;
+    }
+
+    private static bool IsEscaped(string value, int index)
+    {
+        var slashCount = 0;
+        for (var i = index - 1; i >= 0 && value[i] == '\\'; i--)
+            slashCount++;
+
+        return slashCount % 2 == 1;
+    }
+
+    private readonly struct YamlLine
+    {
+        public int Indent { get; }
+        public string Text { get; }
+
+        public YamlLine(int indent, string text)
+        {
+            Indent = indent;
+            Text = text;
+        }
     }
 }

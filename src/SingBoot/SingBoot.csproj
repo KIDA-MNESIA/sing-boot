@@ -21,7 +21,6 @@
 
   <ItemGroup>
     <Reference Include="System.Web.Extensions" />
-    <PackageReference Include="YamlDotNet" Version="17.1.0" />
     <EmbeddedResource Include="..\..\icon.ico" LogicalName="icon.ico" />
     <EmbeddedResource Include="..\..\icon_disabled.ico" LogicalName="icon_disabled.ico" />
   </ItemGroup>
