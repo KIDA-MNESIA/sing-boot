@@ -8,6 +8,7 @@ Windows 系统托盘工具，用于在后台运行和管理 [mihomo](https://wik
 - 左键点击或右键菜单控制启动/停止
 - 开机自启动
 - 自动识别同目录 mihomo 或 sing-box 部署
+- 自动保存核心 stdout 到 `logs/` 目录
 
 ## 安装
 
@@ -48,6 +49,16 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 - sing-box: `sing-box.exe`，搭配 `config.json`
 
 如果两种完整布局同时存在，优先使用 mihomo。修改配置后需先停止再启动才能生效。
+
+## 日志
+
+核心进程的 stdout 会按天追加保存到程序同目录的 `logs/` 文件夹：
+
+```text
+logs/<core>-stdout-yyyy-MM-dd.log
+```
+
+例如 `logs/sing-box-stdout-2026-05-19.log` 或 `logs/mihomo-stdout-2026-05-19.log`。日志内容仅包含核心进程写出的 stdout。
 
 ## 开机自启
 
