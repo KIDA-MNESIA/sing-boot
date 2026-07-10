@@ -5,6 +5,9 @@ namespace SingBoot;
 
 internal sealed class MainForm : Form
 {
+    private const int DefaultGatewayPollIntervalMs = 1000;
+    private const int DefaultGatewayStabilizationMs = 2000;
+
     private readonly SingBootApp _app;
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _miStartStop;
@@ -12,15 +15,21 @@ internal sealed class MainForm : Form
     private readonly Icon _iconRunning;
     private readonly Icon _iconStopped;
     private readonly bool _startCoreAfterLaunch;
+    private readonly bool _waitForDefaultGatewayBeforeStart;
+    private CancellationTokenSource? _automaticStartCancellation;
     private bool _closePending;
     private bool _systemExitPending;
     private bool _manualQuitRequested;
     private bool _exitStatePrepared;
 
-    public MainForm(SingBootApp app, bool startCoreAfterLaunch)
+    public MainForm(
+        SingBootApp app,
+        bool startCoreAfterLaunch,
+        bool waitForDefaultGatewayBeforeStart)
     {
         _app = app;
         _startCoreAfterLaunch = startCoreAfterLaunch;
+        _waitForDefaultGatewayBeforeStart = waitForDefaultGatewayBeforeStart;
 
         // Load icons from embedded resources
         _iconRunning = LoadEmbeddedIcon("icon.ico");
@@ -70,7 +79,7 @@ internal sealed class MainForm : Form
         base.OnLoad(e);
 
         if (_startCoreAfterLaunch)
-            BeginInvoke(TryStartCore);
+            BeginInvoke((Action)StartCoreAfterLaunch);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -83,6 +92,7 @@ internal sealed class MainForm : Form
         }
 
         _closePending = true;
+        CancelPendingAutomaticStart();
         ShowOnlyQuitInTray();
         PrepareExitState(isSystemExit: _systemExitPending || e.CloseReason == CloseReason.WindowsShutDown,
             isManualQuit: _manualQuitRequested);
@@ -165,6 +175,8 @@ internal sealed class MainForm : Form
 
     private void ToggleStartStop()
     {
+        CancelPendingAutomaticStart();
+
         if (_app.IsRunning)
         {
             _app.Stop();
@@ -172,6 +184,51 @@ internal sealed class MainForm : Form
         }
 
         TryStartCore();
+    }
+
+    private async void StartCoreAfterLaunch()
+    {
+        var cancellation = new CancellationTokenSource();
+        _automaticStartCancellation = cancellation;
+
+        try
+        {
+            if (_waitForDefaultGatewayBeforeStart)
+                await WaitForDefaultGatewayAsync(cancellation.Token);
+
+            if (!_closePending && !cancellation.IsCancellationRequested)
+                TryStartCore();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_automaticStartCancellation, cancellation))
+                _automaticStartCancellation = null;
+
+            cancellation.Dispose();
+        }
+    }
+
+    private void CancelPendingAutomaticStart()
+    {
+        _automaticStartCancellation?.Cancel();
+    }
+
+    private static async Task WaitForDefaultGatewayAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            while (!NetworkReadiness.HasUsableIpv4DefaultGateway())
+                await Task.Delay(DefaultGatewayPollIntervalMs, cancellationToken);
+
+            // Windows can publish the gateway just before the routing table is fully usable.
+            // Require it to remain available briefly before starting the core.
+            await Task.Delay(DefaultGatewayStabilizationMs, cancellationToken);
+            if (NetworkReadiness.HasUsableIpv4DefaultGateway())
+                return;
+        }
     }
 
     private void TryStartCore()

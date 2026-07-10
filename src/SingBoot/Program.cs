@@ -45,9 +45,9 @@ internal static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        var startCoreAfterLaunch = launchMode == LaunchMode.HandoffStart ||
-                                   (launchMode == LaunchMode.AutoStart && app.ShouldResumeCoreOnAutoStart());
-        Application.Run(new MainForm(app, startCoreAfterLaunch));
+        var resumeFromAutoStart = launchMode == LaunchMode.AutoStart && app.ShouldResumeCoreOnAutoStart();
+        var startCoreAfterLaunch = launchMode == LaunchMode.HandoffStart || resumeFromAutoStart;
+        Application.Run(new MainForm(app, startCoreAfterLaunch, resumeFromAutoStart));
     }
 
     private static LaunchMode ParseLaunchMode(string[] args)
