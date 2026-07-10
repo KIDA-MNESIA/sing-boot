@@ -3,6 +3,13 @@ using System.Reflection;
 
 namespace SingBoot;
 
+internal enum StartStopAction
+{
+    None,
+    Start,
+    Stop
+}
+
 internal sealed class MainForm : Form
 {
     private const int DefaultGatewayPollIntervalMs = 1000;
@@ -21,6 +28,7 @@ internal sealed class MainForm : Form
     private bool _systemExitPending;
     private bool _manualQuitRequested;
     private bool _exitStatePrepared;
+    private bool _startStopActionPending;
 
     public MainForm(
         SingBootApp app,
@@ -131,6 +139,7 @@ internal sealed class MainForm : Form
         switch (evt.Kind)
         {
             case CoreEventKind.StateChanged:
+                _startStopActionPending = false;
                 UpdateUI(evt.State);
                 if (evt.State == CoreState.Failed && !string.IsNullOrEmpty(evt.Message))
                     ShowBalloon(evt.Message, "Error", ToolTipIcon.Error);
@@ -156,7 +165,18 @@ internal sealed class MainForm : Form
 
     private void OnAutoStartClick(object? sender, EventArgs e)
     {
-        _app.UpdateAutoStart(_miAutoStart.Checked);
+        if (_app.UpdateAutoStart(_miAutoStart.Checked, out var message))
+        {
+            if (!_miAutoStart.Checked)
+                CancelPendingAutomaticStart();
+            return;
+        }
+
+        _miAutoStart.Checked = AutoStart.IsEnabled();
+        if (!_miAutoStart.Checked)
+            CancelPendingAutomaticStart();
+        if (!string.IsNullOrWhiteSpace(message))
+            ShowBalloon(message, "Auto-start", ToolTipIcon.Error);
     }
 
     private void OnQuitClick(object? sender, EventArgs e)
@@ -177,13 +197,24 @@ internal sealed class MainForm : Form
     {
         CancelPendingAutomaticStart();
 
-        if (_app.IsRunning)
+        switch (GetStartStopAction(_app.State, _startStopActionPending))
         {
-            _app.Stop();
-            return;
-        }
+            case StartStopAction.Start:
+                TryStartCore();
+                break;
 
-        TryStartCore();
+            case StartStopAction.Stop:
+                _startStopActionPending = true;
+                UpdateUI(_app.State);
+                if (!_app.Stop(out var message))
+                {
+                    _startStopActionPending = false;
+                    UpdateUI(_app.State);
+                    if (!string.IsNullOrWhiteSpace(message))
+                        ShowBalloon(message, "Stop", ToolTipIcon.Warning);
+                }
+                break;
+        }
     }
 
     private async void StartCoreAfterLaunch()
@@ -196,8 +227,15 @@ internal sealed class MainForm : Form
             if (_waitForDefaultGatewayBeforeStart)
                 await WaitForDefaultGatewayAsync(cancellation.Token);
 
-            if (!_closePending && !cancellation.IsCancellationRequested)
+            var automaticStartStillEnabled = !_waitForDefaultGatewayBeforeStart ||
+                                             SingBootApp.ShouldResumeCoreOnAutoStart();
+            if (ShouldProceedWithAutomaticStart(
+                    _closePending,
+                    cancellation.IsCancellationRequested,
+                    automaticStartStillEnabled))
+            {
                 TryStartCore();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -233,7 +271,7 @@ internal sealed class MainForm : Form
 
     private void TryStartCore()
     {
-        if (_closePending)
+        if (_closePending || GetStartStopAction(_app.State, _startStopActionPending) != StartStopAction.Start)
             return;
 
         var preparation = _app.PrepareForStart(out var message);
@@ -241,7 +279,15 @@ internal sealed class MainForm : Form
         switch (preparation)
         {
             case StartPreparationResult.Ready:
-                _app.Start();
+                _startStopActionPending = true;
+                UpdateUI(_app.State);
+                if (!_app.Start(out message))
+                {
+                    _startStopActionPending = false;
+                    UpdateUI(_app.State);
+                    if (!string.IsNullOrWhiteSpace(message))
+                        ShowBalloon(message, "Start", ToolTipIcon.Warning);
+                }
                 break;
 
             case StartPreparationResult.RelaunchStarted:
@@ -262,7 +308,9 @@ internal sealed class MainForm : Form
         _trayIcon.Text = _app.TrayText;
         _trayIcon.Icon = running ? _iconRunning : _iconStopped;
         _miStartStop.Text = running ? "Stop" : "Start";
-        _miStartStop.Enabled = state != CoreState.Starting && state != CoreState.Stopping;
+        _miStartStop.Enabled = !_startStopActionPending &&
+                               state != CoreState.Starting &&
+                               state != CoreState.Stopping;
     }
 
     private void ShowBalloon(string text, string title, ToolTipIcon icon, int timeoutMs = 10000)
@@ -292,7 +340,29 @@ internal sealed class MainForm : Form
         }
 
         if (isManualQuit)
-            _app.PrepareForManualExit();
+            SingBootApp.PrepareForManualExit();
+    }
+
+    internal static StartStopAction GetStartStopAction(CoreState state, bool actionPending)
+    {
+        if (actionPending)
+            return StartStopAction.None;
+
+        return state switch
+        {
+            CoreState.Stopped => StartStopAction.Start,
+            CoreState.Failed => StartStopAction.Start,
+            CoreState.Running => StartStopAction.Stop,
+            _ => StartStopAction.None
+        };
+    }
+
+    internal static bool ShouldProceedWithAutomaticStart(
+        bool closePending,
+        bool cancellationRequested,
+        bool automaticStartStillEnabled)
+    {
+        return !closePending && !cancellationRequested && automaticStartStillEnabled;
     }
 
     private static Icon LoadEmbeddedIcon(string resourceName)

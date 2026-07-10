@@ -30,7 +30,8 @@ internal sealed class SingBootApp : IDisposable
     public string TrayText => _profile is null ? "sing-boot" : $"sing-boot - {_profile.DisplayName}";
 
     /// <summary>
-    /// Raised on the UI thread when the core state changes or an error occurs.
+    /// Raised when the core state changes or an error occurs. UI subscribers must marshal
+    /// the event to their UI thread.
     /// </summary>
     public event Action<CoreEvent>? OnCoreEvent;
 
@@ -46,32 +47,70 @@ internal sealed class SingBootApp : IDisposable
     /// <summary>
     /// Start the selected core process.
     /// </summary>
-    public void Start()
+    public bool Start(out string message)
     {
         if (_profile is null || _config is null)
-            throw new InvalidOperationException("Configuration has not been loaded.");
+        {
+            message = "Configuration has not been loaded.";
+            return false;
+        }
 
-        _supervisor.RequestStart(_profile.CreateStartRequest(_config));
+        if (_supervisor.State is not CoreState.Stopped and not CoreState.Failed)
+        {
+            message = $"{CoreDisplayName} is already starting, running, or stopping.";
+            return false;
+        }
+
+        if (!_supervisor.RequestStart(_profile.CreateStartRequest(_config)))
+        {
+            message = "Unable to queue the start request because the application is shutting down or another operation is pending.";
+            return false;
+        }
+
+        message = "";
+        return true;
     }
 
     /// <summary>
     /// Stop the selected core process.
     /// </summary>
-    public void Stop()
+    public bool Stop(out string message)
     {
+        if (_supervisor.State != CoreState.Running)
+        {
+            message = $"{CoreDisplayName} is not running.";
+            return false;
+        }
+
+        if (!_supervisor.RequestStop())
+        {
+            message = "Unable to queue the stop request because the application is shutting down or another operation is pending.";
+            return false;
+        }
+
         AutoStart.SetResumeCoreOnAutoStart(false);
-        _supervisor.RequestStop();
+        message = "";
+        return true;
     }
 
-    public bool ShouldResumeCoreOnAutoStart()
+    public static bool ShouldResumeCoreOnAutoStart()
     {
         return AutoStart.IsEnabled() && AutoStart.ShouldResumeCoreOnAutoStart();
     }
 
-    public void UpdateAutoStart(bool enabled)
+    public bool UpdateAutoStart(bool enabled, out string message)
     {
-        AutoStart.SetEnabled(enabled);
-        AutoStart.SetResumeCoreOnAutoStart(enabled && IsRunning);
+        if (!AutoStart.TrySetEnabled(enabled, out message))
+            return false;
+
+        if (enabled && !AutoStart.TrySetResumeCoreOnAutoStart(IsRunning, out var resumeMessage))
+        {
+            message = $"Auto-start was enabled, but its resume state could not be saved: {resumeMessage}";
+            return false;
+        }
+
+        message = "";
+        return true;
     }
 
     public StartPreparationResult PrepareForStart(out string message)
@@ -111,7 +150,7 @@ internal sealed class SingBootApp : IDisposable
         _supervisor.Shutdown();
     }
 
-    public void PrepareForManualExit()
+    public static void PrepareForManualExit()
     {
         AutoStart.SetResumeCoreOnAutoStart(false);
     }

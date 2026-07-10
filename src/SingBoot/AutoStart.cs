@@ -15,7 +15,7 @@ public static class AutoStart
     private const string AutoStartArgument = "--auto-start";
 
     /// <summary>
-    /// Returns true if the auto-start registry entry exists and points to the current executable.
+    /// Returns true only when the auto-start registry entry points to this executable.
     /// </summary>
     public static bool IsEnabled()
     {
@@ -23,7 +23,7 @@ public static class AutoStart
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
             var value = key?.GetValue(ValueName) as string;
-            return !string.IsNullOrEmpty(value);
+            return IsCurrentExecutableCommand(value, Application.ExecutablePath);
         }
         catch
         {
@@ -31,34 +31,47 @@ public static class AutoStart
         }
     }
 
-    /// <summary>
-    /// Enables or disables auto-start by writing/removing the registry value.
-    /// </summary>
-    public static void SetEnabled(bool enabled)
+    public static bool TrySetEnabled(bool enabled, out string message)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            if (key is null) return;
-
             if (enabled)
             {
                 var processPath = Application.ExecutablePath;
-                if (string.IsNullOrEmpty(processPath))
-                    return;
+                if (string.IsNullOrWhiteSpace(processPath))
+                {
+                    message = "Unable to locate the current executable for auto-start.";
+                    return false;
+                }
 
-                var command = $"\"{processPath}\" {AutoStartArgument}";
-                key.SetValue(ValueName, command, RegistryValueKind.String);
+                using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+                if (key is null)
+                {
+                    message = "Unable to open the Windows auto-start registry key.";
+                    return false;
+                }
+
+                key.SetValue(ValueName, BuildCommand(processPath), RegistryValueKind.String);
+                message = "";
+                return true;
             }
-            else
+
+            using (var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true))
+                key?.DeleteValue(ValueName, throwOnMissingValue: false);
+
+            if (!TrySetResumeCoreOnAutoStart(false, out var resumeMessage))
             {
-                key.DeleteValue(ValueName, throwOnMissingValue: false);
-                SetResumeCoreOnAutoStart(false);
+                message = $"Auto-start was disabled, but its resume state could not be cleared: {resumeMessage}";
+                return false;
             }
+
+            message = "";
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently ignore registry errors
+            message = $"Unable to update Windows auto-start: {ex.Message}";
+            return false;
         }
     }
 
@@ -82,25 +95,51 @@ public static class AutoStart
         }
     }
 
-    public static void SetResumeCoreOnAutoStart(bool shouldResume)
+    public static bool TrySetResumeCoreOnAutoStart(bool shouldResume, out string message)
     {
         try
         {
             if (shouldResume)
             {
                 using var key = Registry.CurrentUser.CreateSubKey(AppKeyPath);
-                if (key is null) return;
+                if (key is null)
+                {
+                    message = "Unable to open the sing-boot state registry key.";
+                    return false;
+                }
 
                 key.SetValue(ResumeCoreValueName, 1, RegistryValueKind.DWord);
-                return;
+                message = "";
+                return true;
             }
 
             using var existingKey = Registry.CurrentUser.OpenSubKey(AppKeyPath, writable: true);
             existingKey?.DeleteValue(ResumeCoreValueName, throwOnMissingValue: false);
+            message = "";
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently ignore registry errors
+            message = ex.Message;
+            return false;
         }
+    }
+
+    public static void SetResumeCoreOnAutoStart(bool shouldResume)
+    {
+        TrySetResumeCoreOnAutoStart(shouldResume, out _);
+    }
+
+    internal static bool IsCurrentExecutableCommand(string? command, string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(executablePath))
+            return false;
+
+        return string.Equals(command!.Trim(), BuildCommand(executablePath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string BuildCommand(string executablePath)
+    {
+        return $"\"{Path.GetFullPath(executablePath)}\" {AutoStartArgument}";
     }
 }

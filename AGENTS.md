@@ -4,16 +4,19 @@
 
 ## 项目概述
 
-sing-boot 是一个 Windows 系统托盘工具，用于在后台运行和控制 [sing-box](https://github.com/SagerNet/sing-box) 代理核心。
+sing-boot 是一个 Windows 系统托盘工具，用于在后台运行和控制 [mihomo](https://wiki.metacubex.one/) 或 [sing-box](https://github.com/SagerNet/sing-box) 代理核心。
 
-**技术栈**: C# / .NET 8 / Windows Forms
+**技术栈**: C# / .NET Framework 4.8 / Windows Forms（使用 .NET 8 或更高版本 SDK 构建）
 
 **核心功能**:
 - 托盘图标显示运行状态
-- 左键点击或右键菜单切换 sing-box 启动/停止
+- 左键点击或右键菜单切换当前核心启动/停止
 - 通过 Windows 注册表管理开机自启
-- 配置通过 stdin 管道传递给 `sing-box run -c stdin`
+- 自动发现 mihomo 或 sing-box 布局
+- sing-box 配置通过 stdin 管道传递给 `sing-box run -c stdin`
+- mihomo 配置通过 `-f` 显式传递
 - 支持 JSONC 配置文件（允许注释和尾随逗号）
+- 自动保存核心 stdout 日志
 
 ---
 
@@ -23,21 +26,26 @@ sing-boot 是一个 Windows 系统托盘工具，用于在后台运行和控制 
 sing-boot/
 ├── src/
 │   ├── SingBoot.sln              # Visual Studio 解决方案
-│   └── SingBoot/                 # 主项目目录
-│       ├── SingBoot.csproj       # 项目配置文件
-│       ├── Program.cs            # 程序入口点
-│       ├── SingBootApp.cs        # 应用主控制器
-│       ├── CoreSupervisor.cs     # sing-box 进程管理器
-│       ├── MainForm.cs           # 托盘 UI 窗体
-│       ├── SingBoxConfig.cs      # JSONC 配置加载
-│       ├── JsonHelper.cs         # JSONC 规范化工具
-│       ├── AutoStart.cs          # 开机自启管理
-│       ├── SingleInstance.cs     # 单实例锁
-│       └── PrivilegeHelper.cs    # 权限提升辅助
+│   ├── SingBoot/                 # 主项目目录
+│   │   ├── SingBoot.csproj       # 项目配置文件
+│   │   ├── Program.cs            # 程序入口点
+│   │   ├── SingBootApp.cs        # 应用主控制器
+│   │   ├── CoreSupervisor.cs     # 核心进程管理器
+│   │   ├── CoreProfile.cs        # 核心发现与启动参数
+│   │   ├── CoreConfig.cs         # JSON/YAML 配置加载与 TUN 检测
+│   │   ├── MainForm.cs           # 托盘 UI 窗体
+│   │   ├── JsonHelper.cs         # JSONC 规范化工具
+│   │   ├── NetworkReadiness.cs   # 开机自启网络就绪检查
+│   │   ├── AutoStart.cs          # 开机自启管理
+│   │   ├── SingleInstance.cs     # 单实例锁
+│   │   ├── PrivilegeHelper.cs    # 权限提升辅助
+│   │   └── EmbeddedAssemblyResolver.cs # 嵌入依赖加载
+│   └── SingBoot.Tests/           # MSTest 回归测试
 ├── publish/                      # 发布输出目录
-├── config.json                   # sing-box 示例配置
+├── .github/workflows/            # CI 与发布工作流
 ├── icon.ico                      # 运行中图标
 ├── icon_disabled.ico             # 已停止图标
+├── THIRD-PARTY-NOTICES.txt       # 嵌入依赖许可声明
 └── README.md                     # 项目说明文档
 ```
 
@@ -65,7 +73,7 @@ sing-boot/
 **职责**: 协调各组件、管理生命周期、暴露操作接口
 
 **核心属性**:
-- `Config` - sing-box 配置内容
+- `Config` - 当前所选核心的配置信息
 - `State` - 当前核心状态
 - `RequiresElevation` - 是否需要管理员权限（检测 TUN inbound）
 
@@ -77,7 +85,7 @@ sing-boot/
 
 ### CoreSupervisor.cs - 进程管理器
 
-**职责**: 管理 sing-box 子进程的完整生命周期
+**职责**: 管理所选核心子进程的完整生命周期
 
 **技术要点**:
 - 使用 Windows Job Object 确保父进程退出时子进程也被终止
@@ -111,14 +119,14 @@ Stopped → Starting → Running → Stopping → Stopped
 - 左键点击: 切换启动/停止
 - 会话结束事件: 保存恢复状态
 
-### SingBoxConfig.cs - 代理配置
+### CoreProfile.cs / CoreConfig.cs - 核心发现与配置
 
-**职责**: 加载和规范化 sing-box 配置
+**职责**: 发现 mihomo/sing-box 布局，加载配置并判断是否需要管理员权限
 
 **功能**:
-- 读取程序同目录下的 JSONC 配置文件 `config.json`
-- 调用 `JsonHelper.NormalizeJson()` 去除注释和尾随逗号
-- 检测是否包含 TUN inbound（需要管理员权限）
+- mihomo: 支持 `config.yaml` / `config.yml`，使用完整 YAML 解析器处理锚点、合并键和流式结构
+- sing-box: 读取 JSONC 配置 `config.json`，规范化后通过 stdin 传给核心
+- 检测 mihomo 或 sing-box 是否启用 TUN（需要管理员权限）
 
 ### JsonHelper.cs - JSONC 规范化
 
@@ -129,7 +137,7 @@ Stopped → Starting → Running → Stopping → Stopped
 - 多行注释 `/* ... */`
 - 尾随逗号（在 `}` 或 `]` 前的逗号会被移除）
 
-**实现**: 状态机解析器，逐字符处理
+**实现**: 状态机移除注释并保留词法边界，只删除对象或数组闭合符前的尾随逗号；其他非法 JSON 会被拒绝
 
 ### AutoStart.cs - 开机自启
 
@@ -139,7 +147,7 @@ Stopped → Starting → Running → Stopping → Stopped
 
 **逻辑**:
 - 启用时写入注册表启动项
-- 记录退出时 sing-box 是否在运行
+- 记录退出时当前核心是否在运行
 - 下次开机自动启动时恢复之前的状态
 
 ### SingleInstance.cs - 单实例锁
@@ -154,7 +162,7 @@ Stopped → Starting → Running → Stopping → Stopped
 
 **职责**: 检测和请求管理员权限
 
-**场景**: 当配置包含 TUN inbound 时需要管理员权限
+**场景**: 当配置启用 TUN 时需要管理员权限
 
 **流程**:
 1. 检测当前是否以管理员运行
@@ -167,12 +175,14 @@ Stopped → Starting → Running → Stopping → Stopped
 
 ### 环境要求
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- [.NET 8 或更高版本 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- .NET Framework 4.8 targeting pack
 
 ### 开发构建
 
 ```bash
-dotnet build src/SingBoot/SingBoot.csproj -v minimal
+dotnet build src/SingBoot.sln -v minimal
+dotnet test src/SingBoot.sln -c Release
 ```
 
 ### 发布构建
@@ -182,10 +192,10 @@ dotnet publish src/SingBoot/SingBoot.csproj -c Release
 ```
 
 **发布配置** (Release 模式自动应用):
-- 目标平台: `win-x64`
-- 自包含: 是
-- 单文件: 是
-- 压缩: 是
+- 目标框架: `net48`
+- 目标平台: `x64`
+- 依赖 .NET Framework 4.8（非自包含）
+- YamlDotNet 作为资源嵌入，部署产物仍为单个 `sing-boot.exe`
 - 输出目录: `publish/`
 
 ---
@@ -217,7 +227,8 @@ c:\sing-box\
 1. 在 `src/SingBoot/` 下添加新的 `.cs` 文件
 2. 遵循现有代码风格
 3. 使用 nullable 引用类型
-4. 运行 `dotnet build` 确认编译通过
+4. 在 `src/SingBoot.Tests/` 添加对应回归测试
+5. 运行 `dotnet build src/SingBoot.sln` 和 `dotnet test src/SingBoot.sln` 确认通过
 
 ### 调试
 
@@ -245,8 +256,8 @@ dotnet run --project src/SingBoot/SingBoot.csproj
 
 ### 配置热更新
 
-当前版本不支持热更新配置。修改 `config.json` 后需要:
-1. 停止 sing-box
+当前版本不支持热更新配置。修改配置文件后需要:
+1. 停止当前核心
 2. 重新启动
 
 ---
@@ -257,7 +268,7 @@ dotnet run --project src/SingBoot/SingBoot.csproj
 A: 检查 Windows 资源管理器是否正常运行，尝试重启资源管理器。
 
 **Q: 启动后立即失败?**
-A: 检查 `config.json` 是否有效，托盘错误提示会显示 sing-box 返回的摘要信息。
+A: 检查当前核心的配置文件是否有效，托盘错误提示会显示核心返回的摘要信息。
 
 **Q: 开机自启不工作?**
 A: 确保在右键菜单中勾选了 "Auto-start"，检查注册表中是否存在启动项。
@@ -269,7 +280,7 @@ A: TUN 模式需要管理员权限，点击启动时会弹出 UAC 提示。
 
 ## CI/CD
 
-仓库包含 GitHub Actions 工作流，自动构建 `net48` Release 版本并将 `sing-boot.exe` 发布到 GitHub Release。
+仓库包含 GitHub Actions 工作流：push 和 pull request 会执行 Release 构建及测试；手工发布也会先测试，再构建 `net48` 版本并将单文件 `sing-boot.exe` 发布到 GitHub Release。
 
 ---
 
@@ -277,4 +288,5 @@ A: TUN 模式需要管理员权限，点击启动时会弹出 UAC 提示。
 
 - [sing-box 官方文档](https://sing-box.sagernet.org/)
 - [sing-box GitHub](https://github.com/SagerNet/sing-box)
+- [mihomo 文档](https://wiki.metacubex.one/)
 - [.NET 8 文档](https://learn.microsoft.com/dotnet/)

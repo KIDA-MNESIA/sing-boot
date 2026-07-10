@@ -16,6 +16,7 @@ internal static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        EmbeddedAssemblyResolver.Initialize();
         var launchMode = ParseLaunchMode(args);
 
         using var singleInstance = new SingleInstance();
@@ -45,7 +46,7 @@ internal static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        var resumeFromAutoStart = launchMode == LaunchMode.AutoStart && app.ShouldResumeCoreOnAutoStart();
+        var resumeFromAutoStart = launchMode == LaunchMode.AutoStart && SingBootApp.ShouldResumeCoreOnAutoStart();
         var startCoreAfterLaunch = launchMode == LaunchMode.HandoffStart || resumeFromAutoStart;
         Application.Run(new MainForm(app, startCoreAfterLaunch, resumeFromAutoStart));
     }

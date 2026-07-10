@@ -49,7 +49,7 @@ public sealed class CoreSupervisor : IDisposable
 
     private static readonly Regex AnsiEscapeRegex = new(@"\x1B\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
 
-    private readonly BlockingCollection<SupervisorCommand> _queue = new(10);
+    private readonly BlockingCollection<SupervisorCommand> _queue = new();
     private readonly Thread _thread;
     private readonly object _stderrLock = new();
     private readonly Queue<string> _stderrLines = new();
@@ -63,6 +63,8 @@ public sealed class CoreSupervisor : IDisposable
     private CoreState _state = CoreState.Stopped;
     private string _currentCoreDisplayName = "core";
     private bool _disposed;
+    private int _commandPending;
+    private int _shutdownRequested;
 
     public event Action<CoreEvent>? OnEvent;
 
@@ -75,14 +77,14 @@ public sealed class CoreSupervisor : IDisposable
         _thread.Start();
     }
 
-    public void RequestStart(CoreStartRequest startRequest)
+    public bool RequestStart(CoreStartRequest startRequest)
     {
-        _queue.TryAdd(new SupervisorCommand(CommandKind.Start, startRequest));
+        return TryQueueCommand(new SupervisorCommand(CommandKind.Start, startRequest));
     }
 
-    public void RequestStop()
+    public bool RequestStop()
     {
-        _queue.TryAdd(new SupervisorCommand(CommandKind.Stop, null));
+        return TryQueueCommand(new SupervisorCommand(CommandKind.Stop, null));
     }
 
     /// <summary>
@@ -90,7 +92,7 @@ public sealed class CoreSupervisor : IDisposable
     /// </summary>
     public void Shutdown()
     {
-        _queue.CompleteAdding();
+        SignalShutdown();
         _thread.Join(TimeSpan.FromSeconds(15));
     }
 
@@ -99,30 +101,84 @@ public sealed class CoreSupervisor : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        try { _queue.CompleteAdding(); } catch { }
-        if (_thread.IsAlive)
-            _thread.Join(TimeSpan.FromSeconds(15));
-
-        CleanupProcess();
-        _queue.Dispose();
+        SignalShutdown();
+        var threadStopped = !_thread.IsAlive || _thread.Join(TimeSpan.FromSeconds(15));
+        if (threadStopped)
+        {
+            CleanupProcess();
+            _queue.Dispose();
+        }
     }
 
     private void Run()
     {
         try
         {
-            while (!_queue.IsCompleted)
+            while (Volatile.Read(ref _shutdownRequested) == 0)
             {
                 CheckProcessStatus();
 
                 if (_queue.TryTake(out var cmd, millisecondsTimeout: 200))
-                    HandleCommand(cmd);
+                {
+                    if (Volatile.Read(ref _shutdownRequested) != 0)
+                    {
+                        Interlocked.Exchange(ref _commandPending, 0);
+                        break;
+                    }
+
+                    try
+                    {
+                        HandleCommand(cmd);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _commandPending, 0);
+                    }
+                }
             }
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
 
         DoStopGraceful();
+    }
+
+    private bool TryQueueCommand(SupervisorCommand command)
+    {
+        if (Volatile.Read(ref _shutdownRequested) != 0 ||
+            Interlocked.CompareExchange(ref _commandPending, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (_queue.TryAdd(command))
+                return true;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        Interlocked.Exchange(ref _commandPending, 0);
+        return false;
+    }
+
+    private void SignalShutdown()
+    {
+        if (Interlocked.Exchange(ref _shutdownRequested, 1) != 0)
+            return;
+
+        try
+        {
+            _queue.CompleteAdding();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private void HandleCommand(SupervisorCommand cmd)
@@ -265,8 +321,9 @@ public sealed class CoreSupervisor : IDisposable
             if (processHandle != IntPtr.Zero)
             {
                 try { NativeMethods.TerminateProcess(processHandle, 1); } catch { }
-                NativeMethods.WaitForSingleObject(processHandle, 500);
-                exitCode = TryGetExitCode(processHandle);
+                var waitResult = NativeMethods.WaitForSingleObject(processHandle, 500);
+                if (waitResult != NativeMethods.WAIT_FAILED)
+                    exitCode = TryGetExitCode(processHandle);
             }
 
             SafeCloseHandle(ref stdinRead);
@@ -334,7 +391,13 @@ public sealed class CoreSupervisor : IDisposable
         if (kill)
         {
             NativeMethods.TerminateProcess(_processHandle, 1);
-            NativeMethods.WaitForSingleObject(_processHandle, 1000);
+            var waitResult = NativeMethods.WaitForSingleObject(_processHandle, 1000);
+            if (waitResult == NativeMethods.WAIT_FAILED)
+            {
+                var error = new Win32Exception(Marshal.GetLastWin32Error());
+                RaiseEvent(new CoreEvent(CoreEventKind.Error, _state,
+                    $"Unable to wait for {_currentCoreDisplayName} to terminate: {error.Message}"));
+            }
         }
 
         CleanupProcess();
@@ -372,9 +435,19 @@ public sealed class CoreSupervisor : IDisposable
         if (_processHandle == IntPtr.Zero)
             return;
 
-        if (NativeMethods.WaitForSingleObject(_processHandle, 0) != NativeMethods.WAIT_TIMEOUT)
+        var waitResult = NativeMethods.WaitForSingleObject(_processHandle, 0);
+        if (waitResult == NativeMethods.WAIT_OBJECT_0)
         {
             HandleObservedProcessExit(_state == CoreState.Starting);
+            return;
+        }
+
+        if (waitResult == NativeMethods.WAIT_FAILED)
+        {
+            var error = new Win32Exception(Marshal.GetLastWin32Error());
+            CleanupProcess();
+            SetStateAndNotify(CoreState.Failed,
+                $"Unable to monitor {_currentCoreDisplayName}: {error.Message}");
             return;
         }
 
@@ -644,7 +717,7 @@ public sealed class CoreSupervisor : IDisposable
         return string.IsNullOrWhiteSpace(sanitized) ? "core" : sanitized;
     }
 
-    private static void TryDispose(IDisposable? disposable)
+    private static void TryDispose(FileStream? disposable)
     {
         try
         {
@@ -741,7 +814,9 @@ public sealed class CoreSupervisor : IDisposable
         public const uint STARTF_USESTDHANDLES = 0x00000100;
         public const ushort SW_HIDE = 0;
         public const uint HANDLE_FLAG_INHERIT = 0x00000001;
+        public const uint WAIT_OBJECT_0 = 0x00000000;
         public const uint WAIT_TIMEOUT = 0x00000102;
+        public const uint WAIT_FAILED = 0xFFFFFFFF;
         public const uint CTRL_C_EVENT = 0;
 
         public enum JobObjectInfoType
@@ -827,7 +902,7 @@ public sealed class CoreSupervisor : IDisposable
             public uint dwThreadId;
         }
 
-        [DllImport("kernel32.dll", SetLastError = true)]
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
 
         [DllImport("kernel32.dll", SetLastError = true)]

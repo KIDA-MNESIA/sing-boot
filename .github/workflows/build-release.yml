@@ -24,10 +24,17 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Restore
+        run: dotnet restore src/SingBoot.sln
+
+      - name: Test
+        run: dotnet test src/SingBoot.sln -c Release --no-restore -v minimal
+
       - name: Publish release build
         run: >
           dotnet publish src/SingBoot/SingBoot.csproj
           -c Release
+          --no-restore
           -o publish
 
       - name: Create GitHub Release

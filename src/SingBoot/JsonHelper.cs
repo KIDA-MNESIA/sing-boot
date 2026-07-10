@@ -3,121 +3,174 @@ using System.Text;
 namespace SingBoot;
 
 /// <summary>
-/// Normalizes JSONC (JSON with comments and trailing commas) into strict JSON.
-/// Direct port of the Delphi <c>NormalizeJson</c> state-machine parser.
+/// Normalizes JSONC (JSON with comments and trailing commas) into strict JSON while
+/// preserving token boundaries and source line numbers.
 /// </summary>
 public static class JsonHelper
 {
     public static string NormalizeJson(string source)
     {
-        var len = source.Length;
-        var sb = new StringBuilder(len);
+        if (source is null)
+            throw new ArgumentNullException(nameof(source));
 
-        var i = 0;
+        var withoutComments = StripComments(source);
+        return RemoveTrailingCommas(withoutComments);
+    }
+
+    private static string StripComments(string source)
+    {
+        var result = new StringBuilder(source.Length);
         var inString = false;
         var escape = false;
         var inSingleLineComment = false;
         var inMultiLineComment = false;
-        var pendingComma = false;
 
-        while (i < len)
+        for (var i = 0; i < source.Length; i++)
         {
             var ch = source[i];
 
             if (inSingleLineComment)
             {
-                if (ch == '\n' || ch == '\r')
+                if (ch == '\r' || ch == '\n')
+                {
                     inSingleLineComment = false;
-                i++;
+                    result.Append(ch);
+                }
+                else
+                {
+                    result.Append(' ');
+                }
+
                 continue;
             }
 
             if (inMultiLineComment)
             {
-                if (ch == '*' && i + 1 < len && source[i + 1] == '/')
+                if (ch == '*' && i + 1 < source.Length && source[i + 1] == '/')
                 {
+                    result.Append("  ");
+                    i++;
                     inMultiLineComment = false;
-                    i += 2;
                 }
                 else
                 {
-                    i++;
+                    result.Append(ch == '\r' || ch == '\n' ? ch : ' ');
                 }
+
                 continue;
             }
 
             if (inString)
             {
-                sb.Append(ch);
+                result.Append(ch);
                 if (escape)
                 {
                     escape = false;
                 }
-                else
+                else if (ch == '\\')
                 {
-                    if (ch == '\\')
-                        escape = true;
-                    else if (ch == '"')
-                        inString = false;
+                    escape = true;
                 }
-                i++;
-                continue;
-            }
-
-            // Check for comments
-            if (ch == '/' && i + 1 < len)
-            {
-                var nextCh = source[i + 1];
-                if (nextCh == '/')
+                else if (ch == '"')
                 {
-                    inSingleLineComment = true;
-                    i += 2;
-                    continue;
+                    inString = false;
                 }
-                if (nextCh == '*')
-                {
-                    inMultiLineComment = true;
-                    i += 2;
-                    continue;
-                }
-            }
 
-            // Trailing comma handling
-            if (ch == ',')
-            {
-                pendingComma = true;
-                i++;
                 continue;
-            }
-
-            // Skip whitespace outside strings
-            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
-            {
-                i++;
-                continue;
-            }
-
-            // Flush pending comma (skip if followed by closing bracket)
-            if (pendingComma)
-            {
-                if (ch != '}' && ch != ']')
-                    sb.Append(',');
-                pendingComma = false;
             }
 
             if (ch == '"')
             {
                 inString = true;
-                escape = false;
-                sb.Append(ch);
-                i++;
+                result.Append(ch);
                 continue;
             }
 
-            sb.Append(ch);
-            i++;
+            if (ch == '/' && i + 1 < source.Length)
+            {
+                var next = source[i + 1];
+                if (next == '/')
+                {
+                    result.Append("  ");
+                    i++;
+                    inSingleLineComment = true;
+                    continue;
+                }
+
+                if (next == '*')
+                {
+                    result.Append("  ");
+                    i++;
+                    inMultiLineComment = true;
+                    continue;
+                }
+            }
+
+            result.Append(ch);
         }
 
-        return sb.ToString();
+        if (inMultiLineComment)
+            throw new InvalidOperationException("Configuration contains an unterminated block comment.");
+        if (inString)
+            throw new InvalidOperationException("Configuration contains an unterminated JSON string.");
+
+        return result.ToString();
+    }
+
+    private static string RemoveTrailingCommas(string source)
+    {
+        var result = new StringBuilder(source.Length);
+        var inString = false;
+        var escape = false;
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            var ch = source[i];
+
+            if (inString)
+            {
+                result.Append(ch);
+                if (escape)
+                {
+                    escape = false;
+                }
+                else if (ch == '\\')
+                {
+                    escape = true;
+                }
+                else if (ch == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+                result.Append(ch);
+                continue;
+            }
+
+            if (ch == ',')
+            {
+                var nextIndex = i + 1;
+                while (nextIndex < source.Length && IsJsonWhitespace(source[nextIndex]))
+                    nextIndex++;
+
+                if (nextIndex < source.Length && (source[nextIndex] == '}' || source[nextIndex] == ']'))
+                    continue;
+            }
+
+            result.Append(ch);
+        }
+
+        return result.ToString();
+    }
+
+    private static bool IsJsonWhitespace(char ch)
+    {
+        return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
     }
 }

@@ -38,7 +38,7 @@ public sealed class CoreProfile
             CoreKind.Mihomo => new CoreStartRequest(
                 DisplayName,
                 ExecutablePath,
-                $"{Quote(ExecutablePath)} -d {Quote(DirectoryArgument)}",
+                $"{Quote(ExecutablePath)} -d {Quote(DirectoryArgument)} -f {Quote(ConfigPath)}",
                 WorkingDirectory,
                 null),
             _ => throw new InvalidOperationException("Unsupported core kind.")

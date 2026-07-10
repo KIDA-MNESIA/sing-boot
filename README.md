@@ -2,6 +2,8 @@
 
 Windows 系统托盘工具，用于在后台运行和管理 [mihomo](https://wiki.metacubex.one/) 或 [sing-box](https://github.com/SagerNet/sing-box)。
 
+运行环境为 Windows x64 和 .NET Framework 4.8。
+
 ## 功能
 
 - 托盘图标显示运行状态
@@ -28,8 +30,10 @@ config.yaml
 也支持 `mihomo.exe` 和 `config.yml`。启动命令为：
 
 ```bash
-"mihomo-windows-amd64.exe" -d "<sing-boot.exe 所在目录>"
+"mihomo-windows-amd64.exe" -d "<sing-boot.exe 所在目录>" -f "<配置文件完整路径>"
 ```
+
+程序始终通过 `-f` 显式传递实际发现到的 `config.yaml` 或 `config.yml`，不会依赖 mihomo 的默认文件名。
 
 ### sing-box 部署
 
@@ -39,7 +43,7 @@ sing-box.exe
 config.json
 ```
 
-sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目录 `config.json` 后通过 stdin 传给核心。
+sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目录 `config.json` 后通过 stdin 传给核心。JSONC 支持注释和对象、数组内的尾随逗号；其他非法 JSON 会被拒绝，不会被自动改写。
 
 ## 配置
 
@@ -65,6 +69,21 @@ logs/<core>-stdout-yyyy-MM-dd.log
 在右键菜单中勾选「Auto-start」即可启用。
 
 启用后，如果退出时核心正在运行，下次开机会在可用的 IPv4 默认网关稳定后自动启动；如果退出前已手动停止，开机后仅启动托盘程序。
+
+等待网络期间取消「Auto-start」会同时取消本次待执行的自动启动。
+
+## 开发
+
+需要 Windows、.NET 8 或更高版本 SDK，以及 .NET Framework 4.8 targeting pack。
+
+```bash
+dotnet restore src/SingBoot.sln
+dotnet build src/SingBoot.sln -c Release
+dotnet test src/SingBoot.sln -c Release
+dotnet publish src/SingBoot/SingBoot.csproj -c Release
+```
+
+发布结果位于 `publish/`。运行时依赖的 YAML 解析组件及其第三方许可声明已嵌入 `sing-boot.exe`，部署时仍只需复制该 EXE。GitHub Actions 会在 push、pull request 和手工发布前执行 Release 构建与测试。
 
 ## 注意
 

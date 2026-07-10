@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore src/SingBoot.sln
+
+      - name: Build
+        run: dotnet build src/SingBoot.sln -c Release --no-restore -v minimal
+
+      - name: Test
+        run: dotnet test src/SingBoot.sln -c Release --no-build -v minimal

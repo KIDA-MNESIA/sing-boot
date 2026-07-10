@@ -12,6 +12,8 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -21,8 +23,11 @@
 
   <ItemGroup>
     <Reference Include="System.Web.Extensions" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" GeneratePathProperty="true" ExcludeAssets="runtime" />
     <EmbeddedResource Include="..\..\icon.ico" LogicalName="icon.ico" />
     <EmbeddedResource Include="..\..\icon_disabled.ico" LogicalName="icon_disabled.ico" />
+    <EmbeddedResource Include="..\..\THIRD-PARTY-NOTICES.txt" LogicalName="THIRD-PARTY-NOTICES.txt" />
+    <EmbeddedResource Include="$(PkgYamlDotNet)\lib\net47\YamlDotNet.dll" LogicalName="SingBoot.Dependencies.YamlDotNet.dll" />
   </ItemGroup>
 
 </Project>
