@@ -67,6 +67,8 @@ internal sealed class SingBootApp : IDisposable
             return false;
         }
 
+        RememberCoreShouldRun("start-request-accepted");
+
         message = "";
         return true;
     }
@@ -88,14 +90,9 @@ internal sealed class SingBootApp : IDisposable
             return false;
         }
 
-        AutoStart.SetResumeCoreOnAutoStart(false);
+        UpdateResumeIntent(shouldResume: false, reason: "explicit-stop");
         message = "";
         return true;
-    }
-
-    public static bool ShouldResumeCoreOnAutoStart()
-    {
-        return AutoStart.IsEnabled() && AutoStart.ShouldResumeCoreOnAutoStart();
     }
 
     public bool UpdateAutoStart(bool enabled, out string message)
@@ -108,6 +105,8 @@ internal sealed class SingBootApp : IDisposable
             message = $"Auto-start was enabled, but its resume state could not be saved: {resumeMessage}";
             return false;
         }
+
+        AppLog.Write($"auto-start setting changed: enabled={enabled}; resumeRequested={(enabled && IsRunning)}");
 
         message = "";
         return true;
@@ -152,12 +151,7 @@ internal sealed class SingBootApp : IDisposable
 
     public static void PrepareForManualExit()
     {
-        AutoStart.SetResumeCoreOnAutoStart(false);
-    }
-
-    public void PrepareForSystemExit()
-    {
-        AutoStart.SetResumeCoreOnAutoStart(AutoStart.IsEnabled() && IsRunning);
+        UpdateResumeIntent(shouldResume: false, reason: "manual-quit");
     }
 
     public void Dispose()
@@ -171,12 +165,8 @@ internal sealed class SingBootApp : IDisposable
 
     private void HandleCoreEvent(CoreEvent evt)
     {
-        if (evt.Kind == CoreEventKind.StateChanged &&
-            evt.State == CoreState.Running &&
-            AutoStart.IsEnabled())
-        {
-            AutoStart.SetResumeCoreOnAutoStart(true);
-        }
+        if (evt.Kind == CoreEventKind.StateChanged && evt.State == CoreState.Running)
+            RememberCoreShouldRun("core-running");
 
         OnCoreEvent?.Invoke(evt);
     }
@@ -245,5 +235,28 @@ internal sealed class SingBootApp : IDisposable
 
         message = "";
         return false;
+    }
+
+    private static void RememberCoreShouldRun(string reason)
+    {
+        if (!AutoStart.TryGetEnabled(out var autoStartEnabled, out var message))
+        {
+            AppLog.Write($"resume intent unchanged: reason={reason}; auto-start read failed: {message}");
+            return;
+        }
+
+        if (autoStartEnabled)
+            UpdateResumeIntent(shouldResume: true, reason: reason);
+    }
+
+    private static void UpdateResumeIntent(bool shouldResume, string reason)
+    {
+        if (AutoStart.TrySetResumeCoreOnAutoStart(shouldResume, out var message))
+        {
+            AppLog.Write($"resume intent updated: value={shouldResume}; reason={reason}");
+            return;
+        }
+
+        AppLog.Write($"resume intent update failed: value={shouldResume}; reason={reason}; error={message}");
     }
 }

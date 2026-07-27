@@ -29,6 +29,7 @@ internal sealed class MainForm : Form
     private bool _manualQuitRequested;
     private bool _exitStatePrepared;
     private bool _startStopActionPending;
+    private bool _automaticStartSuppressed;
 
     public MainForm(
         SingBootApp app,
@@ -221,24 +222,34 @@ internal sealed class MainForm : Form
     {
         var cancellation = new CancellationTokenSource();
         _automaticStartCancellation = cancellation;
+        var source = _waitForDefaultGatewayBeforeStart ? "auto-start" : "handoff";
 
         try
         {
             if (_waitForDefaultGatewayBeforeStart)
+            {
+                AppLog.Write("automatic start: waiting for a stable IPv4 default gateway");
                 await WaitForDefaultGatewayAsync(cancellation.Token);
+                AppLog.Write("automatic start: stable IPv4 default gateway detected");
+            }
 
-            var automaticStartStillEnabled = !_waitForDefaultGatewayBeforeStart ||
-                                             SingBootApp.ShouldResumeCoreOnAutoStart();
-            if (ShouldProceedWithAutomaticStart(
-                    _closePending,
-                    cancellation.IsCancellationRequested,
-                    automaticStartStillEnabled))
+            var automaticStartStillEnabled = !_automaticStartSuppressed;
+            var proceed = ShouldProceedWithAutomaticStart(
+                _closePending,
+                cancellation.IsCancellationRequested,
+                automaticStartStillEnabled);
+            AppLog.Write(
+                $"automatic start decision: source={source}; closePending={_closePending}; " +
+                $"cancellationRequested={cancellation.IsCancellationRequested}; " +
+                $"startStillRequested={automaticStartStillEnabled}; proceed={proceed}");
+            if (proceed)
             {
                 TryStartCore();
             }
         }
         catch (OperationCanceledException)
         {
+            AppLog.Write($"automatic start cancelled: source={source}");
         }
         finally
         {
@@ -251,6 +262,7 @@ internal sealed class MainForm : Form
 
     private void CancelPendingAutomaticStart()
     {
+        _automaticStartSuppressed = true;
         _automaticStartCancellation?.Cancel();
     }
 
@@ -275,6 +287,9 @@ internal sealed class MainForm : Form
             return;
 
         var preparation = _app.PrepareForStart(out var message);
+        AppLog.Write(
+            $"core start preparation: core={_app.CoreDisplayName}; result={preparation}; " +
+            $"requiresElevation={_app.RequiresElevation}");
         UpdateUI(_app.State);
         switch (preparation)
         {
@@ -332,14 +347,12 @@ internal sealed class MainForm : Form
             return;
 
         _exitStatePrepared = true;
+        var clearResumeIntent = ShouldClearResumeIntentOnExit(isSystemExit, isManualQuit);
+        AppLog.Write(
+            $"exit decision: systemExit={isSystemExit}; manualQuit={isManualQuit}; " +
+            $"resumeIntent={(clearResumeIntent ? "clear" : "preserve")}");
 
-        if (isSystemExit)
-        {
-            _app.PrepareForSystemExit();
-            return;
-        }
-
-        if (isManualQuit)
+        if (clearResumeIntent)
             SingBootApp.PrepareForManualExit();
     }
 
@@ -363,6 +376,11 @@ internal sealed class MainForm : Form
         bool automaticStartStillEnabled)
     {
         return !closePending && !cancellationRequested && automaticStartStillEnabled;
+    }
+
+    internal static bool ShouldClearResumeIntentOnExit(bool isSystemExit, bool isManualQuit)
+    {
+        return !isSystemExit && isManualQuit;
     }
 
     private static Icon LoadEmbeddedIcon(string resourceName)

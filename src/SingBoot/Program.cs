@@ -32,6 +32,19 @@ internal static class Program
             return;
         }
 
+        var autoStartReadSucceeded = AutoStart.TryGetEnabled(out var autoStartEnabled, out var autoStartReadMessage);
+        var resumeReadSucceeded = AutoStart.TryGetResumeCoreOnAutoStart(
+            out var resumeRequested,
+            out var resumeReadMessage);
+        var startupDecision = StartupDecision.Create(launchMode, autoStartEnabled, resumeRequested);
+        AppLog.Write(
+            $"startup decision: mode={startupDecision.LaunchMode}; " +
+            $"autoStartRead={DescribeRead(autoStartReadSucceeded, autoStartReadMessage)}; " +
+            $"autoStartEnabled={startupDecision.AutoStartEnabled}; " +
+            $"resumeRead={DescribeRead(resumeReadSucceeded, resumeReadMessage)}; " +
+            $"resumeRequested={startupDecision.ResumeRequested}; " +
+            $"action={startupDecision.Action}");
+
         SingBootApp app;
         try
         {
@@ -40,15 +53,17 @@ internal static class Program
         catch (Exception ex)
         {
             var msg = string.IsNullOrEmpty(ex.Message) ? "Unknown error." : ex.Message;
+            AppLog.Write($"startup failed: {msg}");
             MessageBox.Show(msg, AppTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        var resumeFromAutoStart = launchMode == LaunchMode.AutoStart && SingBootApp.ShouldResumeCoreOnAutoStart();
-        var startCoreAfterLaunch = launchMode == LaunchMode.HandoffStart || resumeFromAutoStart;
-        Application.Run(new MainForm(app, startCoreAfterLaunch, resumeFromAutoStart));
+        Application.Run(new MainForm(
+            app,
+            startupDecision.StartCoreAfterLaunch,
+            startupDecision.WaitForDefaultGatewayBeforeStart));
     }
 
     private static LaunchMode ParseLaunchMode(string[] args)
@@ -83,5 +98,10 @@ internal static class Program
         }
 
         return false;
+    }
+
+    private static string DescribeRead(bool succeeded, string message)
+    {
+        return succeeded ? "ok" : $"error({message})";
     }
 }

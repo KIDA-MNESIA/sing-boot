@@ -19,14 +19,23 @@ public static class AutoStart
     /// </summary>
     public static bool IsEnabled()
     {
+        return TryGetEnabled(out var enabled, out _) && enabled;
+    }
+
+    internal static bool TryGetEnabled(out bool enabled, out string message)
+    {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
             var value = key?.GetValue(ValueName) as string;
-            return IsCurrentExecutableCommand(value, Application.ExecutablePath);
+            enabled = IsCurrentExecutableCommand(value, Application.ExecutablePath);
+            message = "";
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
+            enabled = false;
+            message = ex.Message;
             return false;
         }
     }
@@ -77,20 +86,29 @@ public static class AutoStart
 
     public static bool ShouldResumeCoreOnAutoStart()
     {
+        return TryGetResumeCoreOnAutoStart(out var shouldResume, out _) && shouldResume;
+    }
+
+    internal static bool TryGetResumeCoreOnAutoStart(out bool shouldResume, out string message)
+    {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(AppKeyPath, writable: false);
             var value = key?.GetValue(ResumeCoreValueName);
-            return value switch
+            shouldResume = value switch
             {
                 int intValue => intValue != 0,
                 string stringValue => string.Equals(stringValue, "true", StringComparison.OrdinalIgnoreCase) ||
                                       string.Equals(stringValue, "1", StringComparison.OrdinalIgnoreCase),
                 _ => false
             };
+            message = "";
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
+            shouldResume = false;
+            message = ex.Message;
             return false;
         }
     }

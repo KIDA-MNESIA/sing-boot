@@ -56,19 +56,20 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 
 ## 日志
 
-核心进程的 stdout 会按天追加保存到程序同目录的 `logs/` 文件夹：
+日志会按天追加保存到程序同目录的 `logs/` 文件夹：
 
 ```text
 logs/<core>-stdout-yyyy-MM-dd.log
+logs/sing-boot-yyyy-MM-dd.log
 ```
 
-例如 `logs/sing-box-stdout-2026-05-19.log` 或 `logs/mihomo-stdout-2026-05-19.log`。日志内容仅包含核心进程写出的 stdout。
+`<core>-stdout` 文件仅包含核心进程写出的 stdout。`sing-boot` 日志记录启动模式、自动恢复判定、默认网关等待、提权前的启动准备和退出时是否保留恢复意图，不记录完整代理配置。
 
 ## 开机自启
 
 在右键菜单中勾选「Auto-start」即可启用。
 
-启用后，如果退出时核心正在运行，下次开机会在可用的 IPv4 默认网关稳定后自动启动；如果退出前已手动停止，开机后仅启动托盘程序。
+启用后，成功接受核心启动请求会记住“应保持运行”的意图，下次开机会在可用的 IPv4 默认网关稳定后自动启动。只有明确点击 Stop、Quit 或取消「Auto-start」才会清除该意图；系统关机不会再根据关机瞬间的进程状态覆盖它。
 
 等待网络期间取消「Auto-start」会同时取消本次待执行的自动启动。
 

@@ -37,6 +37,8 @@ sing-boot/
 │   │   ├── JsonHelper.cs         # JSONC 规范化工具
 │   │   ├── NetworkReadiness.cs   # 开机自启网络就绪检查
 │   │   ├── AutoStart.cs          # 开机自启管理
+│   │   ├── StartupDecision.cs     # 启动模式与自动恢复决策
+│   │   ├── AppLog.cs              # sing-boot 按日诊断日志
 │   │   ├── SingleInstance.cs     # 单实例锁
 │   │   ├── PrivilegeHelper.cs    # 权限提升辅助
 │   │   └── EmbeddedAssemblyResolver.cs # 嵌入依赖加载
@@ -117,7 +119,7 @@ Stopped → Starting → Running → Stopping → Stopped
 
 **事件处理**:
 - 左键点击: 切换启动/停止
-- 会话结束事件: 保存恢复状态
+- 会话结束事件: 系统关机保留恢复意图，明确 Quit 时清除
 
 ### CoreProfile.cs / CoreConfig.cs - 核心发现与配置
 
@@ -147,8 +149,10 @@ Stopped → Starting → Running → Stopping → Stopped
 
 **逻辑**:
 - 启用时写入注册表启动项
-- 记录退出时当前核心是否在运行
-- 下次开机自动启动时恢复之前的状态
+- 成功接受启动请求后记录“核心应保持运行”的用户意图
+- 只有明确 Stop、Quit 或关闭 Auto-start 时清除恢复意图
+- 系统关机不使用瞬时进程状态覆盖恢复意图
+- 下次开机根据恢复意图决定是否等待默认网关并启动核心
 
 ### SingleInstance.cs - 单实例锁
 

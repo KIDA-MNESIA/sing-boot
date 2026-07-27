@@ -32,4 +32,21 @@ public sealed class MainFormStateTests
             cancellationRequested: true,
             automaticStartStillEnabled: true));
     }
+
+    [TestMethod]
+    public void ShouldClearResumeIntentOnExitOnlyForExplicitManualQuit()
+    {
+        Assert.IsTrue(MainForm.ShouldClearResumeIntentOnExit(
+            isSystemExit: false,
+            isManualQuit: true));
+        Assert.IsFalse(MainForm.ShouldClearResumeIntentOnExit(
+            isSystemExit: true,
+            isManualQuit: false));
+        Assert.IsFalse(MainForm.ShouldClearResumeIntentOnExit(
+            isSystemExit: true,
+            isManualQuit: true));
+        Assert.IsFalse(MainForm.ShouldClearResumeIntentOnExit(
+            isSystemExit: false,
+            isManualQuit: false));
+    }
 }
