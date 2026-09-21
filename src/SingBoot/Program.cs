@@ -16,7 +16,6 @@ internal static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        EmbeddedAssemblyResolver.Initialize();
         var launchMode = ParseLaunchMode(args);
 
         using var singleInstance = new SingleInstance();
