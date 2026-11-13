@@ -10,6 +10,7 @@ Windows 系统托盘工具，用于在后台运行和管理 [sing-box](https://g
 - 左键点击或右键菜单控制启动/停止
 - 开机自启动
 - 自动识别同目录 sing-box 部署
+- 支持在 sing-box 启动后从远程地址拉取新配置、自动备份原 `config.json` 并重启核心
 - 自动保存核心 stdout 到 `logs/` 目录
 
 ## 安装
@@ -25,6 +26,7 @@ Windows 系统托盘工具，用于在后台运行和管理 [sing-box](https://g
 sing-boot.exe
 sing-box.exe
 config.json
+sing-boot.json    # 可选：远程配置拉取设置
 ```
 
 sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目录 `config.json` 后通过 stdin 传给核心。JSONC 支持注释和对象、数组内的尾随逗号；其他非法 JSON 会被拒绝，不会被自动改写。
@@ -32,6 +34,21 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 ## 配置
 
 程序启动核心前会自动识别同目录的 `sing-box.exe` 和 `config.json`。修改配置后需先停止再启动才能生效。
+
+### 启动后远程拉取配置（可选）
+
+可在同目录创建 `sing-boot.json`（同样支持 JSONC 注释和尾随逗号）：
+
+```json
+{
+  "configUrl": "https://raw.githubusercontent.com/SagerNet/sing-box/refs/heads/testing/test/config/vless-tls-client.json"
+}
+```
+
+配置 `configUrl` 后，每次启动 `sing-box` 进入运行状态后，`sing-boot` 会执行一次远程配置更新流程：
+1. 从 `configUrl` 拉取远程配置并校验是否为合法 JSON/JSONC 对象（此时可走已启动的 `sing-box` 代理/TUN 访问远程地址）
+2. 将原 `config.json` 备份为 `config.json.bak`，并将新配置保存为 `config.json`
+3. 自动重启一次 `sing-box` 使新配置生效（拉取或校验失败时保留原 `config.json` 且不中断当前运行的 `sing-box`）
 
 ## 日志
 

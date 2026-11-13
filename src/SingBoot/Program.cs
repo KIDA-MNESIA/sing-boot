@@ -17,6 +17,7 @@ internal static class Program
     static void Main(string[] args)
     {
         var launchMode = ParseLaunchMode(args);
+        var skipInitialConfigUpdate = ParseSkipInitialConfigUpdate(args);
 
         using var singleInstance = new SingleInstance();
         if (!AcquireSingleInstance(singleInstance, launchMode))
@@ -62,10 +63,11 @@ internal static class Program
         Application.Run(new MainForm(
             app,
             startupDecision.StartCoreAfterLaunch,
-            startupDecision.WaitForDefaultGatewayBeforeStart));
+            startupDecision.WaitForDefaultGatewayBeforeStart,
+            skipInitialConfigUpdate));
     }
 
-    private static LaunchMode ParseLaunchMode(string[] args)
+    internal static LaunchMode ParseLaunchMode(string[] args)
     {
         foreach (var arg in args)
         {
@@ -80,6 +82,17 @@ internal static class Program
         }
 
         return LaunchMode.Normal;
+    }
+
+    internal static bool ParseSkipInitialConfigUpdate(string[] args)
+    {
+        foreach (var arg in args)
+        {
+            if (string.Equals(arg, "--skip-config-update", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool AcquireSingleInstance(SingleInstance singleInstance, LaunchMode launchMode)

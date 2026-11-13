@@ -27,6 +27,23 @@ public sealed class CoreConfigTests
         Assert.ThrowsExactly<InvalidOperationException>(() => LoadSingBox("{\"port\": 1 2}"));
     }
 
+    [TestMethod]
+    [DataRow("404")]
+    [DataRow("[]")]
+    [DataRow("\"string\"")]
+    public void Parse_RejectsNonObjectJsonRoot(string json)
+    {
+        Assert.ThrowsExactly<InvalidOperationException>(() => CoreConfig.Parse(json));
+    }
+
+    [TestMethod]
+    public void Parse_StripsLeadingUtf8Bom()
+    {
+        var config = CoreConfig.Parse("\uFEFF{\"inbounds\":[{\"type\":\"tun\"}]}");
+
+        Assert.IsTrue(config.RequiresElevation);
+    }
+
     private static CoreConfig LoadSingBox(string json)
     {
         using var directory = new TestDirectory();

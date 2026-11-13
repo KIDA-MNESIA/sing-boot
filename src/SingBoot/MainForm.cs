@@ -30,15 +30,20 @@ internal sealed class MainForm : Form
     private bool _exitStatePrepared;
     private bool _startStopActionPending;
     private bool _automaticStartSuppressed;
+    private CancellationTokenSource? _remoteUpdateCancellation;
+    private bool _skipNextRemoteConfigUpdate;
+    private bool _pendingRemoteConfigUpdate;
 
     public MainForm(
         SingBootApp app,
         bool startCoreAfterLaunch,
-        bool waitForDefaultGatewayBeforeStart)
+        bool waitForDefaultGatewayBeforeStart,
+        bool skipInitialConfigUpdate = false)
     {
         _app = app;
         _startCoreAfterLaunch = startCoreAfterLaunch;
         _waitForDefaultGatewayBeforeStart = waitForDefaultGatewayBeforeStart;
+        _skipNextRemoteConfigUpdate = skipInitialConfigUpdate;
 
         // Load icons from embedded resources
         _iconRunning = LoadEmbeddedIcon("icon.ico");
@@ -102,6 +107,7 @@ internal sealed class MainForm : Form
 
         _closePending = true;
         CancelPendingAutomaticStart();
+        CancelPendingRemoteConfigUpdate();
         ShowOnlyQuitInTray();
         PrepareExitState(isSystemExit: _systemExitPending || e.CloseReason == CloseReason.WindowsShutDown,
             isManualQuit: _manualQuitRequested);
@@ -142,6 +148,20 @@ internal sealed class MainForm : Form
             case CoreEventKind.StateChanged:
                 _startStopActionPending = false;
                 UpdateUI(evt.State);
+                if (evt.State == CoreState.Running)
+                {
+                    if (_pendingRemoteConfigUpdate)
+                    {
+                        _pendingRemoteConfigUpdate = false;
+                        BeginUpdateRemoteConfigAndRestart();
+                    }
+                }
+                else if (evt.State is CoreState.Failed or CoreState.Stopped)
+                {
+                    _pendingRemoteConfigUpdate = false;
+                    CancelPendingRemoteConfigUpdate();
+                }
+
                 if (evt.State == CoreState.Failed && !string.IsNullOrEmpty(evt.Message))
                     ShowBalloon(evt.Message, "Error", ToolTipIcon.Error);
                 break;
@@ -205,6 +225,8 @@ internal sealed class MainForm : Form
                 break;
 
             case StartStopAction.Stop:
+                _pendingRemoteConfigUpdate = false;
+                CancelPendingRemoteConfigUpdate();
                 _startStopActionPending = true;
                 UpdateUI(_app.State);
                 if (!_app.Stop(out var message))
@@ -266,6 +288,98 @@ internal sealed class MainForm : Form
         _automaticStartCancellation?.Cancel();
     }
 
+    private void CancelPendingRemoteConfigUpdate()
+    {
+        _remoteUpdateCancellation?.Cancel();
+    }
+
+    private async void BeginUpdateRemoteConfigAndRestart()
+    {
+        if (_closePending || _app.State != CoreState.Running)
+            return;
+
+        if (!_app.TryGetRemoteConfigUrl(out var configUrl, out var settingsMessage))
+        {
+            AppLog.Write($"remote config update skipped: {settingsMessage}");
+            if (!string.IsNullOrWhiteSpace(settingsMessage))
+                ShowBalloon(settingsMessage, "Config Update", ToolTipIcon.Warning);
+            return;
+        }
+
+        if (configUrl is null)
+            return;
+
+        CancelPendingRemoteConfigUpdate();
+        var cancellation = new CancellationTokenSource();
+        _remoteUpdateCancellation = cancellation;
+        var targetDescription = SingBootSettings.DescribeUriForLog(configUrl);
+
+        try
+        {
+            AppLog.Write($"remote config update: fetching from {targetDescription}");
+            var downloaded = await _app.FetchRemoteConfigAsync(configUrl, cancellation.Token);
+
+            if (!ShouldApplyRemoteConfigUpdate(_closePending, cancellation.IsCancellationRequested, _app.State))
+            {
+                AppLog.Write($"remote config update cancelled before apply: source={targetDescription}; state={_app.State}");
+                return;
+            }
+
+            var preparation = _app.ApplyRemoteConfigAndPrepareRestart(downloaded, out var message);
+            AppLog.Write(
+                $"remote config update applied: source={targetDescription}; preparation={preparation}; " +
+                $"requiresElevation={_app.RequiresElevation}");
+            UpdateUI(_app.State);
+
+            switch (preparation)
+            {
+                case StartPreparationResult.Ready:
+                    _startStopActionPending = true;
+                    UpdateUI(_app.State);
+                    if (!_app.Restart(out message))
+                    {
+                        _startStopActionPending = false;
+                        UpdateUI(_app.State);
+                        AppLog.Write($"remote config restart failed: {message}");
+                        if (!string.IsNullOrWhiteSpace(message))
+                            ShowBalloon(message, "Config Update", ToolTipIcon.Warning);
+                    }
+                    else
+                    {
+                        AppLog.Write("remote config update: sing-box restart requested");
+                    }
+                    break;
+
+                case StartPreparationResult.RelaunchStarted:
+                    Close();
+                    break;
+
+                case StartPreparationResult.Blocked:
+                    if (!string.IsNullOrWhiteSpace(message))
+                        ShowBalloon(message, "Config Update", ToolTipIcon.Warning);
+                    break;
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            AppLog.Write($"remote config update cancelled: source={targetDescription}");
+        }
+        catch (Exception ex)
+        {
+            var detail = string.IsNullOrWhiteSpace(ex.Message) ? "Unknown error." : ex.Message;
+            AppLog.Write($"remote config update failed: source={targetDescription}; error={detail}");
+            if (!_closePending)
+                ShowBalloon($"Unable to update configuration: {detail}", "Config Update", ToolTipIcon.Warning);
+        }
+        finally
+        {
+            if (ReferenceEquals(_remoteUpdateCancellation, cancellation))
+                _remoteUpdateCancellation = null;
+
+            cancellation.Dispose();
+        }
+    }
+
     private static async Task WaitForDefaultGatewayAsync(CancellationToken cancellationToken)
     {
         while (true)
@@ -302,6 +416,10 @@ internal sealed class MainForm : Form
                     UpdateUI(_app.State);
                     if (!string.IsNullOrWhiteSpace(message))
                         ShowBalloon(message, "Start", ToolTipIcon.Warning);
+                }
+                else
+                {
+                    _pendingRemoteConfigUpdate = ConsumeShouldScheduleRemoteUpdate(ref _skipNextRemoteConfigUpdate);
                 }
                 break;
 
@@ -381,6 +499,25 @@ internal sealed class MainForm : Form
     internal static bool ShouldClearResumeIntentOnExit(bool isSystemExit, bool isManualQuit)
     {
         return !isSystemExit && isManualQuit;
+    }
+
+    internal static bool ConsumeShouldScheduleRemoteUpdate(ref bool skipNextRemoteConfigUpdate)
+    {
+        if (skipNextRemoteConfigUpdate)
+        {
+            skipNextRemoteConfigUpdate = false;
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool ShouldApplyRemoteConfigUpdate(
+        bool closePending,
+        bool cancellationRequested,
+        CoreState currentState)
+    {
+        return !closePending && !cancellationRequested && currentState == CoreState.Running;
     }
 
     private static Icon LoadEmbeddedIcon(string resourceName)

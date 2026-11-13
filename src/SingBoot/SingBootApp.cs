@@ -17,6 +17,8 @@ internal sealed class SingBootApp : IDisposable
 {
     private readonly CoreSupervisor _supervisor;
     private readonly string _baseDirectory;
+    private readonly RemoteTextDownloader? _remoteDownloader;
+    private readonly Func<CoreProfile, uint, bool>? _conflictDetector;
     private CoreProfile? _profile;
     private CoreConfig? _config;
     private bool _disposed;
@@ -36,11 +38,24 @@ internal sealed class SingBootApp : IDisposable
     public event Action<CoreEvent>? OnCoreEvent;
 
     public SingBootApp(LaunchMode launchMode)
+        : this(launchMode, AppContext.BaseDirectory, remoteDownloader: null, conflictDetector: null)
     {
-        _baseDirectory = Path.GetFullPath(AppContext.BaseDirectory);
+    }
+
+    internal SingBootApp(
+        LaunchMode launchMode,
+        string baseDirectory,
+        RemoteTextDownloader? remoteDownloader,
+        Func<CoreProfile, uint, bool>? conflictDetector = null,
+        int startupGracePeriodMs = CoreSupervisor.DefaultStartupGracePeriodMs)
+    {
+        _ = launchMode;
+        _baseDirectory = Path.GetFullPath(baseDirectory);
+        _remoteDownloader = remoteDownloader;
+        _conflictDetector = conflictDetector;
         CoreDiscovery.TryDiscover(_baseDirectory, out _profile, out _);
 
-        _supervisor = new CoreSupervisor();
+        _supervisor = new CoreSupervisor(startupGracePeriodMs);
         _supervisor.OnEvent += HandleCoreEvent;
     }
 
@@ -71,6 +86,98 @@ internal sealed class SingBootApp : IDisposable
 
         message = "";
         return true;
+    }
+
+    /// <summary>
+    /// Restart the selected core process with the currently loaded configuration.
+    /// </summary>
+    public bool Restart(out string message)
+    {
+        if (_profile is null || _config is null)
+        {
+            message = "Configuration has not been loaded.";
+            return false;
+        }
+
+        if (_supervisor.State is not CoreState.Running and not CoreState.Stopped and not CoreState.Failed)
+        {
+            message = $"{CoreDisplayName} is currently transitioning states.";
+            return false;
+        }
+
+        if (!_supervisor.RequestStart(_profile.CreateStartRequest(_config)))
+        {
+            message = "Unable to queue the restart request because the application is shutting down or another operation is pending.";
+            return false;
+        }
+
+        RememberCoreShouldRun("remote-config-restart");
+
+        message = "";
+        return true;
+    }
+
+    public bool TryGetRemoteConfigUrl(out Uri? configUrl, out string message)
+    {
+        if (!SingBootSettings.TryLoad(_baseDirectory, out var settings, out message))
+        {
+            configUrl = null;
+            return false;
+        }
+
+        configUrl = settings.ConfigUrl;
+        return true;
+    }
+
+    public Task<DownloadedCoreConfig> FetchRemoteConfigAsync(Uri configUrl, CancellationToken cancellationToken)
+    {
+        return RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
+    }
+
+    public StartPreparationResult ApplyRemoteConfigAndPrepareRestart(
+        DownloadedCoreConfig downloadedConfig,
+        out string message)
+    {
+        if (!CoreDiscovery.TryDiscover(_baseDirectory, out var profile, out message) || profile is null)
+        {
+            _profile = null;
+            _config = null;
+            if (string.IsNullOrWhiteSpace(message))
+                message = "Unable to find a supported core layout.";
+            return StartPreparationResult.Blocked;
+        }
+
+        try
+        {
+            RemoteConfigUpdater.BackupAndReplaceConfig(profile.ConfigPath, downloadedConfig.RawContent);
+            _profile = profile;
+            _config = downloadedConfig.Config;
+        }
+        catch (Exception ex)
+        {
+            var detail = string.IsNullOrWhiteSpace(ex.Message)
+                ? "Unknown error while writing configuration."
+                : ex.Message;
+            message = $"Unable to update {profile.DisplayName} configuration: {detail}";
+            return StartPreparationResult.Blocked;
+        }
+
+        if (HasConflictingCoreProcess(out message))
+            return StartPreparationResult.Blocked;
+
+        if (RequiresElevation && !PrivilegeHelper.IsAdministrator())
+        {
+            var elevation = PrivilegeHelper.TryRelaunchElevatedForStart(
+                CoreDisplayName,
+                out message,
+                skipConfigUpdateOnce: true);
+            return elevation == ElevationRequestResult.Started
+                ? StartPreparationResult.RelaunchStarted
+                : StartPreparationResult.Blocked;
+        }
+
+        message = "";
+        return StartPreparationResult.Ready;
     }
 
     /// <summary>
@@ -207,6 +314,18 @@ internal sealed class SingBootApp : IDisposable
     {
         if (_profile is null)
         {
+            message = "";
+            return false;
+        }
+
+        if (_conflictDetector is not null)
+        {
+            if (_conflictDetector(_profile, _supervisor.ProcessId))
+            {
+                message = $"Another {_profile.DisplayName} process is already running. Stop it before starting from the tray.";
+                return true;
+            }
+
             message = "";
             return false;
         }

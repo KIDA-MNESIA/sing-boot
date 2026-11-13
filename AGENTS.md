@@ -15,6 +15,7 @@ sing-boot 是一个 Windows 系统托盘工具，用于在后台运行和控制 
 - 自动发现 sing-box 布局
 - sing-box 配置通过 stdin 管道传递给 `sing-box run -c stdin`
 - 支持 JSONC 配置文件（允许注释和尾随逗号）
+- 支持通过 `sing-boot.json` 在核心运行后拉取远程配置、备份 `config.json.bak` 并自动重启 sing-box
 - 自动保存核心 stdout 日志
 
 ---
@@ -32,6 +33,8 @@ sing-boot/
 │   │   ├── CoreSupervisor.cs     # 核心进程管理器
 │   │   ├── CoreProfile.cs        # 核心发现与启动参数
 │   │   ├── CoreConfig.cs         # JSON 配置加载与 TUN 检测
+│   │   ├── SingBootSettings.cs   # sing-boot.json 配置加载与校验
+│   │   ├── RemoteConfigUpdater.cs # 远程配置拉取、校验与备份替换
 │   │   ├── MainForm.cs           # 托盘 UI 窗体
 │   │   ├── JsonHelper.cs         # JSONC 规范化工具
 │   │   ├── NetworkReadiness.cs   # 开机自启网络就绪检查
@@ -127,6 +130,15 @@ Stopped → Starting → Running → Stopping → Stopped
 - `CoreConfig` 读取 JSONC 配置 `config.json`，规范化后通过 stdin 传给核心
 - 检测 sing-box 是否启用 TUN（需要管理员权限）
 
+### SingBootSettings.cs / RemoteConfigUpdater.cs - 远程配置拉取与备份替换
+
+**职责**: 读取可选的 `sing-boot.json`，在 sing-box 进入运行状态后拉取远程配置并触发一次重启
+
+**功能**:
+- `SingBootSettings` 读取并校验同目录 `sing-boot.json` 中的 `configUrl`（支持 JSONC）
+- `RemoteConfigUpdater` 通过 HTTPS/HTTP 拉取配置，先校验 JSON/JSONC 合法性，再将原 `config.json` 原子备份为 `config.json.bak` 并写入新的 `config.json`
+- 更新成功后调用 `SingBootApp.Restart()` 重启一次 `sing-box`（若新配置新增了 TUN 且当前未提权，则通过 `--handoff-start --skip-config-update` 提权重启且避免重复拉取）
+
 ### JsonHelper.cs - JSONC 规范化
 
 **职责**: 将 JSONC 转换为标准 JSON
@@ -210,7 +222,8 @@ dotnet publish src/SingBoot/SingBoot.csproj -c Release
 c:\sing-box\
 ├── sing-box.exe          # sing-box 核心
 ├── sing-boot.exe         # 本程序
-└── config.json           # sing-box 配置
+├── config.json           # sing-box 配置
+└── sing-boot.json        # 可选：配置远程拉取地址 configUrl
 ```
 
 ### 首次运行

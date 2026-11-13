@@ -43,12 +43,13 @@ public readonly struct CoreEvent
 /// </summary>
 public sealed class CoreSupervisor : IDisposable
 {
-    private const int StartupGracePeriodMs = 2000;
+    internal const int DefaultStartupGracePeriodMs = 2000;
     private const int MaxCapturedStderrLines = 20;
     private const int StdoutLogBufferSize = 8192;
 
     private static readonly Regex AnsiEscapeRegex = new(@"\x1B\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
 
+    private readonly int _startupGracePeriodMs;
     private readonly BlockingCollection<SupervisorCommand> _queue = new();
     private readonly Thread _thread;
     private readonly object _stderrLock = new();
@@ -72,7 +73,13 @@ public sealed class CoreSupervisor : IDisposable
     public uint ProcessId => _processId;
 
     public CoreSupervisor()
+        : this(DefaultStartupGracePeriodMs)
     {
+    }
+
+    internal CoreSupervisor(int startupGracePeriodMs)
+    {
+        _startupGracePeriodMs = startupGracePeriodMs;
         _thread = new Thread(Run) { IsBackground = true, Name = "CoreSupervisor" };
         _thread.Start();
     }
@@ -197,7 +204,7 @@ public sealed class CoreSupervisor : IDisposable
 
     private void DoStart(CoreStartRequest request)
     {
-        DoStopGraceful();
+        DoStopGraceful(notifyStopped: false);
         ClearCapturedStderr();
         SetStateAndNotify(CoreState.Starting);
         _currentCoreDisplayName = request.DisplayName;
@@ -312,7 +319,7 @@ public sealed class CoreSupervisor : IDisposable
             _jobHandle = jobHandle;
             _processHandle = processHandle;
             _processId = processId;
-            _startupDeadlineUtc = DateTime.UtcNow.AddMilliseconds(StartupGracePeriodMs);
+            _startupDeadlineUtc = DateTime.UtcNow.AddMilliseconds(_startupGracePeriodMs);
         }
         catch (Exception ex)
         {
@@ -374,7 +381,7 @@ public sealed class CoreSupervisor : IDisposable
         }
     }
 
-    private void DoStopGraceful()
+    private void DoStopGraceful(bool notifyStopped = true)
     {
         if (_processHandle == IntPtr.Zero)
             return;
@@ -401,7 +408,8 @@ public sealed class CoreSupervisor : IDisposable
         }
 
         CleanupProcess();
-        SetStateAndNotify(CoreState.Stopped);
+        if (notifyStopped)
+            SetStateAndNotify(CoreState.Stopped);
     }
 
     private static bool SendCtrlC(uint processId)

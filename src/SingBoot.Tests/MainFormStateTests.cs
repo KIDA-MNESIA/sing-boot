@@ -49,4 +49,48 @@ public sealed class MainFormStateTests
             isSystemExit: false,
             isManualQuit: false));
     }
+
+    [TestMethod]
+    public void ConsumeShouldScheduleRemoteUpdate_SkipsOnlyFirstStartAfterPostUpdateHandoff()
+    {
+        var skipOnce = true;
+
+        Assert.IsFalse(MainForm.ConsumeShouldScheduleRemoteUpdate(ref skipOnce));
+        Assert.IsFalse(skipOnce);
+        Assert.IsTrue(MainForm.ConsumeShouldScheduleRemoteUpdate(ref skipOnce));
+    }
+
+    [TestMethod]
+    public void ShouldApplyRemoteConfigUpdate_RequiresRunningStateAndActiveRequest()
+    {
+        Assert.IsTrue(MainForm.ShouldApplyRemoteConfigUpdate(
+            closePending: false,
+            cancellationRequested: false,
+            currentState: CoreState.Running));
+        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
+            closePending: true,
+            cancellationRequested: false,
+            currentState: CoreState.Running));
+        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
+            closePending: false,
+            cancellationRequested: true,
+            currentState: CoreState.Running));
+        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
+            closePending: false,
+            cancellationRequested: false,
+            currentState: CoreState.Stopped));
+    }
+
+    private static readonly string[] HandoffOnlyArgs = ["--handoff-start"];
+
+    [TestMethod]
+    public void ProgramArguments_SupportPostUpdateHandoffFlag()
+    {
+        var args = PrivilegeHelper.BuildElevatedStartArguments(skipConfigUpdateOnce: true)
+            .Split(' ');
+
+        Assert.AreEqual(LaunchMode.HandoffStart, Program.ParseLaunchMode(args));
+        Assert.IsTrue(Program.ParseSkipInitialConfigUpdate(args));
+        Assert.IsFalse(Program.ParseSkipInitialConfigUpdate(HandoffOnlyArgs));
+    }
 }
