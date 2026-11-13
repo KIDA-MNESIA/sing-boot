@@ -86,6 +86,11 @@ internal static class CoreDiscovery
     private const string SingBoxExecutableName = "sing-box.exe";
     private const string SingBoxConfigName = "config.json";
 
+    public static string GetConfigPath(string baseDirectory)
+    {
+        return Path.Combine(Path.GetFullPath(baseDirectory), SingBoxConfigName);
+    }
+
     public static bool TryDiscover(string baseDirectory, out CoreProfile? profile, out string message)
     {
         var directory = Path.GetFullPath(baseDirectory);

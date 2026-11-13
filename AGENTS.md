@@ -114,8 +114,8 @@ Stopped → Starting → Running → Stopping → Stopped
 
 **UI 元素**:
 - 托盘图标（运行中/已停止两种状态）
-- 右键菜单: Start/Stop、Auto-start、Quit
-- 气泡通知（错误提示）
+- 右键菜单: Start/Stop、Update config、Auto-start、Quit
+- 气泡通知（错误提示与手动配置更新反馈）
 
 **事件处理**:
 - 左键点击: 切换启动/停止

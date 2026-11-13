@@ -134,6 +134,32 @@ internal sealed class SingBootApp : IDisposable
         return RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
     }
 
+    public bool ApplyRemoteConfigOnly(DownloadedCoreConfig downloadedConfig, out string message)
+    {
+        try
+        {
+            var configPath = CoreDiscovery.GetConfigPath(_baseDirectory);
+            RemoteConfigUpdater.BackupAndReplaceConfig(configPath, downloadedConfig.RawContent);
+
+            if (CoreDiscovery.TryDiscover(_baseDirectory, out var profile, out _) && profile is not null)
+            {
+                _profile = profile;
+                _config = downloadedConfig.Config;
+            }
+
+            message = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            var detail = string.IsNullOrWhiteSpace(ex.Message)
+                ? "Unknown error while writing configuration."
+                : ex.Message;
+            message = $"Unable to update configuration: {detail}";
+            return false;
+        }
+    }
+
     public StartPreparationResult ApplyRemoteConfigAndPrepareRestart(
         DownloadedCoreConfig downloadedConfig,
         out string message)

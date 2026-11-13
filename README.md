@@ -50,6 +50,8 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 2. 将原 `config.json` 备份为 `config.json.bak`，并将新配置保存为 `config.json`
 3. 自动重启一次 `sing-box` 使新配置生效（拉取或校验失败时保留原 `config.json` 且不中断当前运行的 `sing-box`）
 
+此外，也可随时在托盘右键菜单点击「Update config」手动拉取更新（若当前 `sing-box` 正在运行则更新后自动重启；若当前处于停止状态则仅备份并更新 `config.json`）。
+
 ## 日志
 
 日志会按天追加保存到程序同目录的 `logs/` 文件夹：

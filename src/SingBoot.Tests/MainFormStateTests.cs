@@ -61,24 +61,69 @@ public sealed class MainFormStateTests
     }
 
     [TestMethod]
-    public void ShouldApplyRemoteConfigUpdate_RequiresRunningStateAndActiveRequest()
+    public void CanUpdateConfig_AllowsOnlyStableStatesWithoutPendingOperations()
     {
-        Assert.IsTrue(MainForm.ShouldApplyRemoteConfigUpdate(
-            closePending: false,
-            cancellationRequested: false,
-            currentState: CoreState.Running));
-        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
-            closePending: true,
-            cancellationRequested: false,
-            currentState: CoreState.Running));
-        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
-            closePending: false,
-            cancellationRequested: true,
-            currentState: CoreState.Running));
-        Assert.IsFalse(MainForm.ShouldApplyRemoteConfigUpdate(
-            closePending: false,
-            cancellationRequested: false,
-            currentState: CoreState.Stopped));
+        Assert.IsTrue(MainForm.CanUpdateConfig(CoreState.Running, startStopActionPending: false, isUpdatingConfig: false));
+        Assert.IsTrue(MainForm.CanUpdateConfig(CoreState.Stopped, startStopActionPending: false, isUpdatingConfig: false));
+        Assert.IsTrue(MainForm.CanUpdateConfig(CoreState.Failed, startStopActionPending: false, isUpdatingConfig: false));
+        Assert.IsFalse(MainForm.CanUpdateConfig(CoreState.Starting, startStopActionPending: false, isUpdatingConfig: false));
+        Assert.IsFalse(MainForm.CanUpdateConfig(CoreState.Stopping, startStopActionPending: false, isUpdatingConfig: false));
+        Assert.IsFalse(MainForm.CanUpdateConfig(CoreState.Running, startStopActionPending: true, isUpdatingConfig: false));
+        Assert.IsFalse(MainForm.CanUpdateConfig(CoreState.Running, startStopActionPending: false, isUpdatingConfig: true));
+    }
+
+    [TestMethod]
+    public void GetRemoteConfigApplyAction_DistinguishesManualAndPostStartUpdates()
+    {
+        Assert.AreEqual(
+            RemoteConfigApplyAction.SaveAndRestartCore,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                isManualRequest: false,
+                currentState: CoreState.Running));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.SaveAndRestartCore,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                isManualRequest: true,
+                currentState: CoreState.Running));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.SaveOnly,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                isManualRequest: true,
+                currentState: CoreState.Stopped));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.SaveOnly,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                isManualRequest: true,
+                currentState: CoreState.Failed));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.None,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                isManualRequest: false,
+                currentState: CoreState.Stopped));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.None,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: true,
+                cancellationRequested: false,
+                isManualRequest: true,
+                currentState: CoreState.Running));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.None,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: true,
+                isManualRequest: true,
+                currentState: CoreState.Running));
     }
 
     private static readonly string[] HandoffOnlyArgs = ["--handoff-start"];

@@ -168,6 +168,36 @@ public sealed class RemoteConfigUpdaterTests
     }
 
     [TestMethod]
+    public async Task ApplyRemoteConfigOnly_UpdatesConfigWhileStoppedEvenWithoutInitialConfigFile()
+    {
+        using var directory = new TestDirectory();
+        const string remoteUrl = "https://example.test/config.json";
+        const string newConfig = "{\"inbounds\":[{\"type\":\"mixed\",\"listen_port\":7890}]}";
+
+        directory.WriteFile("sing-box.exe", "stub");
+        directory.WriteFile(SingBootSettings.FileName, $"{{\"configUrl\":\"{remoteUrl}\"}}");
+
+        using var app = new SingBootApp(
+            LaunchMode.Normal,
+            directory.Path,
+            (_, _) => Task.FromResult(newConfig),
+            conflictDetector: (_, _) => false);
+
+        Assert.IsNull(app.Profile);
+        Assert.IsTrue(app.TryGetRemoteConfigUrl(out var parsedUrl, out var settingsMessage), settingsMessage);
+        Assert.IsNotNull(parsedUrl);
+
+        var downloaded = await app.FetchRemoteConfigAsync(parsedUrl, CancellationToken.None);
+        Assert.IsTrue(app.ApplyRemoteConfigOnly(downloaded, out var applyMessage), applyMessage);
+
+        var configPath = System.IO.Path.Combine(directory.Path, "config.json");
+        Assert.IsTrue(File.Exists(configPath));
+        Assert.AreEqual(newConfig, File.ReadAllText(configPath, Encoding.UTF8));
+        Assert.IsNotNull(app.Profile);
+        Assert.IsNotNull(app.Config);
+    }
+
+    [TestMethod]
     public async Task EndToEnd_StartsCoreFetchesRemoteConfigBacksUpAndRestartsWithNewStdin()
     {
         using var directory = new TestDirectory();
