@@ -11,7 +11,7 @@ Windows 系统托盘工具，用于在后台运行和管理 [sing-box](https://g
 - 开机自启动
 - 自动识别同目录 sing-box 部署
 - 支持在 sing-box 启动后从远程地址拉取新配置、自动备份原 `config.json` 并重启核心
-- 自动保存核心 stdout 到 `logs/` 目录
+- 自动保存核心 stdout 和 stderr 到 `logs/` 目录
 
 ## 安装
 
@@ -50,7 +50,10 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 2. 将原 `config.json` 备份为 `config.json.bak`，并将新配置保存为 `config.json`
 3. 自动重启一次 `sing-box` 使新配置生效（拉取或校验失败时保留原 `config.json` 且不中断当前运行的 `sing-box`）
 
+核心进程进入运行状态时，TUN 或 Tailscale 通道可能仍在连接。自动更新遇到暂时性网络错误、请求超时或 HTTP 408/429/500/502/503/504 时，每隔 3 秒重试。单次请求最多等待 30 秒，整个自动更新下载流程最多等待 60 秒（包含请求和重试等待）。配置格式错误、证书错误及其他 HTTP 错误会直接报错。停止核心或退出程序会取消下载和重试；全部尝试失败后保留原配置和当前核心。
+
 此外，也可随时在托盘右键菜单点击「Update config」手动拉取更新（若当前 `sing-box` 正在运行则更新后自动重启；若当前处于停止状态则仅备份并更新 `config.json`）。
+手动更新只请求一次，超时为 30 秒。
 
 ## 日志
 
@@ -58,10 +61,13 @@ sing-box 仍使用 `sing-box run -c stdin`，程序会读取并规范化同目�
 
 ```text
 logs/<core>-stdout-yyyy-MM-dd.log
+logs/<core>-stderr-yyyy-MM-dd.log
 logs/sing-boot-yyyy-MM-dd.log
 ```
 
-`<core>-stdout` 文件仅包含核心进程写出的 stdout。`sing-boot` 日志记录启动模式、自动恢复判定、默认网关等待、提权前的启动准备和退出时是否保留恢复意图，不记录完整代理配置。
+`<core>-stdout` 文件包含核心进程写出的 stdout。`<core>-stderr` 文件保存核心的 stderr，每行附带接收时间，移除终端颜色控制符，并隐藏 HTTP/HTTPS URL 中的账号、路径和查询参数。即使 stderr 日志写入失败，程序也会继续读取核心输出，保留最近的错误摘要。
+
+`sing-boot` 日志记录启动模式、自动恢复判定、默认网关等待、提权前的启动准备、配置下载重试次数和耗时，以及退出时是否保留恢复意图。下载失败会记录异常链、网络状态及 socket 错误码，隐藏 URL 中的账号、路径和查询参数，不记录完整代理配置。
 
 ## 开机自启
 

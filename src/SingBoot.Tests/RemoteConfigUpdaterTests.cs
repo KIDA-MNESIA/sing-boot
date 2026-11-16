@@ -82,7 +82,7 @@ public sealed class RemoteConfigUpdaterTests
                 ReasonPhrase = "Not Found"
             }));
 
-        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsExactlyAsync<RemoteConfigHttpException>(() =>
             RemoteConfigUpdater.DownloadTextAsync(
                 new Uri("https://example.test/missing.json"),
                 handler,
@@ -214,11 +214,14 @@ public sealed class RemoteConfigUpdaterTests
         var firstRunningTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondRunningTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var runningCount = 0;
+        var downloadAttempts = 0;
 
         using var app = new SingBootApp(
             LaunchMode.Normal,
             directory.Path,
-            (_, _) => Task.FromResult(updatedConfig),
+            (_, _) => ++downloadAttempts == 1
+                ? Task.FromException<string>(new HttpRequestException("Network is still starting"))
+                : Task.FromResult(updatedConfig),
             conflictDetector: (_, _) => false,
             startupGracePeriodMs: 150);
 
@@ -246,7 +249,8 @@ public sealed class RemoteConfigUpdaterTests
         Assert.IsTrue(app.TryGetRemoteConfigUrl(out var url, out var settingsMsg), settingsMsg);
         Assert.IsNotNull(url);
 
-        var downloaded = await app.FetchRemoteConfigAsync(url, CancellationToken.None);
+        var downloaded = await app.FetchRemoteConfigAsync(url, CancellationToken.None, retryTransientErrors: true);
+        Assert.AreEqual(2, downloadAttempts);
         Assert.AreEqual(
             StartPreparationResult.Ready,
             app.ApplyRemoteConfigAndPrepareRestart(downloaded, out var restartPrepMsg),
@@ -264,6 +268,20 @@ public sealed class RemoteConfigUpdaterTests
         Assert.IsTrue(File.Exists(launchesLogPath));
         var launches = File.ReadAllLines(launchesLogPath, Encoding.UTF8);
         CollectionAssert.AreEqual(new[] { initialConfig, updatedConfig }, launches);
+
+        var stderrLines = Directory.GetFiles(System.IO.Path.Combine(directory.Path, "logs"), "sing-box-stderr-*.log")
+            .SelectMany(File.ReadAllLines).ToArray();
+        Assert.AreEqual(2, stderrLines.Length);
+        foreach (var line in stderrLines)
+        {
+            StringAssert.Contains(line, "WARN network starting https://example.test/<redacted>");
+            Assert.IsFalse(line.Contains("\u001b"));
+            Assert.IsFalse(line.Contains("secret"));
+        }
+        var stdoutLines = Directory.GetFiles(System.IO.Path.Combine(directory.Path, "logs"), "sing-box-stdout-*.log")
+            .SelectMany(File.ReadAllLines).ToArray();
+        Assert.AreEqual(2, stdoutLines.Length);
+        Assert.IsTrue(stdoutLines.All(line => line == "stub ready"));
 
         CollectionAssert.AreEqual(
             new[]
@@ -311,6 +329,8 @@ public sealed class RemoteConfigUpdaterTests
                                       };
 
                                       var stdin = Console.In.ReadToEnd().Trim();
+                                      Console.WriteLine("stub ready");
+                                      Console.Error.WriteLine("\u001b[33mWARN network starting https://example.test/config?token=secret\u001b[0m");
                                       File.AppendAllText(
                                           Path.Combine(Environment.CurrentDirectory, "launches.log"),
                                           stdin + Environment.NewLine,

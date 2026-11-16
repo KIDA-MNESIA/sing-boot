@@ -16,7 +16,7 @@ sing-boot 是一个 Windows 系统托盘工具，用于在后台运行和控制 
 - sing-box 配置通过 stdin 管道传递给 `sing-box run -c stdin`
 - 支持 JSONC 配置文件（允许注释和尾随逗号）
 - 支持通过 `sing-boot.json` 在核心运行后拉取远程配置、备份 `config.json.bak` 并自动重启 sing-box
-- 自动保存核心 stdout 日志
+- 自动保存核心 stdout 和 stderr 日志（按天追加）
 
 ---
 
@@ -92,7 +92,7 @@ sing-boot/
 **技术要点**:
 - 使用 Windows Job Object 确保父进程退出时子进程也被终止
 - 通过 stdin 管道传递配置: `sing-box run -c stdin`
-- 捕获 stderr 输出用于错误诊断
+- 将 stderr 按天保存到 `logs/<core>-stderr-yyyy-MM-dd.log`，同时保留最近 20 行用于错误摘要；写日志失败仍继续读取管道
 - 优雅关闭: 先发送 Ctrl+C，超时后强制终止
 
 **状态机**:
@@ -137,6 +137,8 @@ Stopped → Starting → Running → Stopping → Stopped
 **功能**:
 - `SingBootSettings` 读取并校验同目录 `sing-boot.json` 中的 `configUrl`（支持 JSONC）
 - `RemoteConfigUpdater` 通过 HTTPS/HTTP 拉取配置，先校验 JSON/JSONC 合法性，再将原 `config.json` 原子备份为 `config.json.bak` 并写入新的 `config.json`
+- 自动更新遇到暂时性网络错误、请求超时或 HTTP 408/429/500/502/503/504 时每 3 秒重试，单次请求最多 30 秒，总时限 60 秒（覆盖请求和重试等待）；停止核心或退出会取消流程，永久错误不重试，手动更新保持单次请求
+- 诊断日志记录重试次数、耗时和底层网络异常；URL 仅保留协议、主机和端口，嵌套 JSON 解析错误不记录原始配置片段
 - 更新成功后调用 `SingBootApp.Restart()` 重启一次 `sing-box`（若新配置新增了 TUN 且当前未提权，则通过 `--handoff-start --skip-config-update` 提权重启且避免重复拉取）
 
 ### JsonHelper.cs - JSONC 规范化

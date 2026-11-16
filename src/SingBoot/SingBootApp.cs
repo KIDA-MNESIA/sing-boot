@@ -129,9 +129,14 @@ internal sealed class SingBootApp : IDisposable
         return true;
     }
 
-    public Task<DownloadedCoreConfig> FetchRemoteConfigAsync(Uri configUrl, CancellationToken cancellationToken)
+    public Task<DownloadedCoreConfig> FetchRemoteConfigAsync(
+        Uri configUrl,
+        CancellationToken cancellationToken,
+        bool retryTransientErrors = false)
     {
-        return RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
+        return retryTransientErrors
+            ? RemoteConfigUpdater.FetchWithRetryAsync(configUrl, _remoteDownloader, cancellationToken, log: AppLog.Write)
+            : RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
     }
 
     public bool ApplyRemoteConfigOnly(DownloadedCoreConfig downloadedConfig, out string message)

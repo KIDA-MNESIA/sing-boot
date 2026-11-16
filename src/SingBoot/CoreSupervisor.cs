@@ -219,7 +219,7 @@ public sealed class CoreSupervisor : IDisposable
         IntPtr stderrRead = IntPtr.Zero;
         IntPtr stderrWrite = IntPtr.Zero;
         FileStream? stdoutLogStream = null;
-        StdoutLogContext? stdoutLogContext = null;
+        CoreLogContext? logContext = null;
         DateTime stdoutLogDate = DateTime.MinValue;
         var stdoutReaderStarted = false;
         var stderrReaderStarted = false;
@@ -230,8 +230,8 @@ public sealed class CoreSupervisor : IDisposable
                 throw new FileNotFoundException($"{request.DisplayName} executable not found.", request.ExecutablePath);
 
             stdoutLogDate = DateTime.Today;
-            stdoutLogContext = CreateStdoutLogContext(request);
-            stdoutLogStream = OpenStdoutLogStream(stdoutLogContext, stdoutLogDate);
+            logContext = CreateCoreLogContext(request);
+            stdoutLogStream = OpenCoreLogStream(logContext, stdoutLogDate, "stdout");
 
             jobHandle = NativeMethods.CreateJobObject(IntPtr.Zero, null);
             if (jobHandle == IntPtr.Zero)
@@ -296,12 +296,12 @@ public sealed class CoreSupervisor : IDisposable
             if (!NativeMethods.AssignProcessToJobObject(jobHandle, processHandle))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed.");
 
-            StartStdoutLogReader(stdoutRead, stdoutLogContext, stdoutLogStream, stdoutLogDate);
+            StartStdoutLogReader(stdoutRead, logContext, stdoutLogStream, stdoutLogDate);
             stdoutReaderStarted = true;
             stdoutRead = IntPtr.Zero;
             stdoutLogStream = null;
 
-            StartStderrReader(stderrRead);
+            StartStderrReader(stderrRead, logContext);
             stderrReaderStarted = true;
             stderrRead = IntPtr.Zero;
 
@@ -496,7 +496,7 @@ public sealed class CoreSupervisor : IDisposable
 
     private void StartStdoutLogReader(
         IntPtr stdoutReadHandle,
-        StdoutLogContext logContext,
+        CoreLogContext logContext,
         FileStream initialLogStream,
         DateTime initialLogDate)
     {
@@ -512,7 +512,7 @@ public sealed class CoreSupervisor : IDisposable
 
     private void CaptureStdoutLog(
         IntPtr stdoutReadHandle,
-        StdoutLogContext logContext,
+        CoreLogContext logContext,
         FileStream initialLogStream,
         DateTime initialLogDate)
     {
@@ -542,7 +542,7 @@ public sealed class CoreSupervisor : IDisposable
                     if (today != logDate || logStream is null)
                     {
                         TryDispose(logStream);
-                        logStream = OpenStdoutLogStream(logContext, today);
+                        logStream = OpenCoreLogStream(logContext, today, "stdout");
                         logDate = today;
                     }
 
@@ -554,7 +554,7 @@ public sealed class CoreSupervisor : IDisposable
                     loggingEnabled = false;
                     TryDispose(logStream);
                     logStream = null;
-                    ReportStdoutLogErrorOnce(logContext, ex, ref logErrorReported);
+                    ReportLogErrorOnce(logContext, "stdout", ex, ref logErrorReported);
                 }
             }
         }
@@ -567,9 +567,9 @@ public sealed class CoreSupervisor : IDisposable
         }
     }
 
-    private void StartStderrReader(IntPtr stderrReadHandle)
+    private void StartStderrReader(IntPtr stderrReadHandle, CoreLogContext logContext)
     {
-        var readerThread = new Thread(() => CaptureStderr(stderrReadHandle))
+        var readerThread = new Thread(() => CaptureStderr(stderrReadHandle, logContext))
         {
             IsBackground = true,
             Name = "CoreSupervisor.Stderr"
@@ -579,8 +579,13 @@ public sealed class CoreSupervisor : IDisposable
         _stderrReaderThread = readerThread;
     }
 
-    private void CaptureStderr(IntPtr stderrReadHandle)
+    private void CaptureStderr(IntPtr stderrReadHandle, CoreLogContext logContext)
     {
+        StreamWriter? logWriter = null;
+        var logDate = DateTime.MinValue;
+        var loggingEnabled = true;
+        var logErrorReported = false;
+
         try
         {
             using var handle = new SafeFileHandle(stderrReadHandle, ownsHandle: true);
@@ -603,10 +608,45 @@ public sealed class CoreSupervisor : IDisposable
                         _stderrLines.Dequeue();
                     _stderrLines.Enqueue(sanitized);
                 }
+
+                if (!loggingEnabled)
+                    continue;
+
+                try
+                {
+                    var now = DateTimeOffset.Now;
+                    if (logWriter is null || now.Date != logDate)
+                    {
+                        TryDispose(logWriter);
+                        logWriter = new StreamWriter(
+                            OpenCoreLogStream(logContext, now.Date, "stderr"),
+                            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+                        {
+                            AutoFlush = true
+                        };
+                        logDate = now.Date;
+                    }
+
+                    logWriter.Write(now.ToString("O", CultureInfo.InvariantCulture));
+                    logWriter.Write(' ');
+                    logWriter.WriteLine(AppLog.RedactUrls(sanitized));
+                }
+                catch (Exception ex)
+                {
+                    // Keep draining stderr and retaining the failure summary even if disk logging fails.
+                    loggingEnabled = false;
+                    TryDispose(logWriter);
+                    logWriter = null;
+                    ReportLogErrorOnce(logContext, "stderr", ex, ref logErrorReported);
+                }
             }
         }
         catch
         {
+        }
+        finally
+        {
+            TryDispose(logWriter);
         }
     }
 
@@ -679,31 +719,32 @@ public sealed class CoreSupervisor : IDisposable
         return sanitized.Replace("\0", "").Trim();
     }
 
-    private void ReportStdoutLogErrorOnce(StdoutLogContext logContext, Exception ex, ref bool errorReported)
+    private void ReportLogErrorOnce(CoreLogContext logContext, string streamName, Exception ex, ref bool errorReported)
     {
         if (errorReported)
             return;
 
         errorReported = true;
         var detail = string.IsNullOrWhiteSpace(ex.Message) ? "Unknown error." : ex.Message;
+        AppLog.Write($"core {streamName} log failed: core={logContext.DisplayName}; error={AppLog.DescribeException(ex)}");
         RaiseEvent(new CoreEvent(
             CoreEventKind.Error,
             _state,
-            $"Unable to write {logContext.DisplayName} stdout log: {detail}"));
+            $"Unable to write {logContext.DisplayName} {streamName} log: {detail}"));
     }
 
-    private static StdoutLogContext CreateStdoutLogContext(CoreStartRequest request)
+    private static CoreLogContext CreateCoreLogContext(CoreStartRequest request)
     {
         var logsDirectory = Path.Combine(request.WorkingDirectory, "logs");
         Directory.CreateDirectory(logsDirectory);
 
-        return new StdoutLogContext(request.DisplayName, logsDirectory, SanitizeLogFileName(request.DisplayName));
+        return new CoreLogContext(request.DisplayName, logsDirectory, SanitizeLogFileName(request.DisplayName));
     }
 
-    private static FileStream OpenStdoutLogStream(StdoutLogContext logContext, DateTime date)
+    private static FileStream OpenCoreLogStream(CoreLogContext logContext, DateTime date, string streamName)
     {
         var path = Path.Combine(logContext.LogsDirectory,
-            $"{logContext.FileNamePrefix}-stdout-{date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}.log");
+            $"{logContext.FileNamePrefix}-{streamName}-{date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}.log");
 
         return new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
     }
@@ -725,7 +766,7 @@ public sealed class CoreSupervisor : IDisposable
         return string.IsNullOrWhiteSpace(sanitized) ? "core" : sanitized;
     }
 
-    private static void TryDispose(FileStream? disposable)
+    private static void TryDispose(IDisposable? disposable)
     {
         try
         {
@@ -799,13 +840,13 @@ public sealed class CoreSupervisor : IDisposable
         }
     }
 
-    private sealed class StdoutLogContext
+    private sealed class CoreLogContext
     {
         public string DisplayName { get; }
         public string LogsDirectory { get; }
         public string FileNamePrefix { get; }
 
-        public StdoutLogContext(string displayName, string logsDirectory, string fileNamePrefix)
+        public CoreLogContext(string displayName, string logsDirectory, string fileNamePrefix)
         {
             DisplayName = displayName;
             LogsDirectory = logsDirectory;

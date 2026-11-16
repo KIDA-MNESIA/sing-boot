@@ -355,7 +355,8 @@ internal sealed class MainForm : Form
         try
         {
             AppLog.Write($"remote config update ({trigger}): fetching from {targetDescription}");
-            var downloaded = await _app.FetchRemoteConfigAsync(configUrl, cancellation.Token);
+            var downloaded = await _app.FetchRemoteConfigAsync(
+                configUrl, cancellation.Token, retryTransientErrors: !isManualRequest);
 
             var applyAction = GetRemoteConfigApplyAction(
                 _closePending,
@@ -436,8 +437,8 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            var detail = string.IsNullOrWhiteSpace(ex.Message) ? "Unknown error." : ex.Message;
-            AppLog.Write($"remote config update ({trigger}) failed: source={targetDescription}; error={detail}");
+            var detail = AppLog.RedactUrls(string.IsNullOrWhiteSpace(ex.Message) ? "Unknown error." : ex.Message);
+            AppLog.Write($"remote config update ({trigger}) failed: source={targetDescription}; error={AppLog.DescribeException(ex)}");
             if (!_closePending)
                 ShowBalloon($"Unable to update configuration: {detail}", "Update config", ToolTipIcon.Warning);
         }
