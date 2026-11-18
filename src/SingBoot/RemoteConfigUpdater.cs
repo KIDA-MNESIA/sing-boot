@@ -1,9 +1,7 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Security.Authentication;
 using System.Text;
 
 namespace SingBoot;
@@ -41,8 +39,6 @@ internal static class RemoteConfigUpdater
     public const string BackupExtension = ".bak";
     private const long MaxConfigResponseBytes = 64L * 1024 * 1024;
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan AutomaticUpdateTimeout = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(3);
 
     public static string GetBackupPath(string configPath)
     {
@@ -61,94 +57,6 @@ internal static class RemoteConfigUpdater
         var sanitized = CoreConfig.StripUtf8Bom(rawText);
         var parsedConfig = CoreConfig.Parse(sanitized);
         return new DownloadedCoreConfig(sanitized, parsedConfig);
-    }
-
-    internal static async Task<DownloadedCoreConfig> FetchWithRetryAsync(
-        Uri configUrl,
-        RemoteTextDownloader? downloader,
-        CancellationToken cancellationToken,
-        TimeSpan? totalTimeout = null,
-        TimeSpan? retryDelay = null,
-        Action<string>? log = null)
-    {
-        var timeout = totalTimeout ?? AutomaticUpdateTimeout;
-        var delay = retryDelay ?? AutomaticRetryDelay;
-        if (timeout <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(totalTimeout));
-        if (delay <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(retryDelay));
-
-        using var deadline = new CancellationTokenSource(timeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
-        var elapsed = Stopwatch.StartNew();
-        var source = SingBootSettings.DescribeUriForLog(configUrl);
-        var attempt = 0;
-        Exception? lastFailure = null;
-
-        try
-        {
-            while (true)
-            {
-                linked.Token.ThrowIfCancellationRequested();
-                attempt++;
-                try
-                {
-                    var downloaded = await FetchAsync(configUrl, downloader, linked.Token).ConfigureAwait(false);
-                    linked.Token.ThrowIfCancellationRequested();
-                    log?.Invoke($"remote config download succeeded: source={source}; attempts={attempt}; elapsedMs={elapsed.ElapsedMilliseconds}");
-                    return downloaded;
-                }
-                catch (Exception ex) when (IsTransientDownloadFailure(ex) && !linked.IsCancellationRequested)
-                {
-                    lastFailure = ex;
-                    log?.Invoke(
-                        $"remote config download retry: source={source}; attempt={attempt}; " +
-                        $"elapsedMs={elapsed.ElapsedMilliseconds}; retryDelayMs={delay.TotalMilliseconds}; " +
-                        $"error={AppLog.DescribeException(ex)}");
-                }
-
-                // The same deadline covers requests and waits, including a slow final request.
-                await Task.Delay(delay, linked.Token).ConfigureAwait(false);
-            }
-        }
-        catch (Exception ex) when (linked.IsCancellationRequested)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new TimeoutException(
-                $"Automatic remote configuration update timed out after {timeout.TotalSeconds:0.###}s ({attempt} attempts).",
-                lastFailure ?? ex);
-        }
-    }
-
-    private static bool IsTransientDownloadFailure(Exception exception)
-    {
-        if (exception is RemoteConfigHttpException httpError)
-        {
-            return (int)httpError.StatusCode is 408 or 429 or 500 or 502 or 503 or 504;
-        }
-
-        if (exception is TimeoutException)
-            return true;
-
-        if (exception is not HttpRequestException && exception is not IOException && exception is not WebException)
-            return false;
-
-        for (Exception? current = exception; current is not null; current = current.InnerException)
-        {
-            if (current is AuthenticationException)
-                return false;
-
-            if (current is WebException webError)
-            {
-                return webError.Status is WebExceptionStatus.ConnectFailure or
-                    WebExceptionStatus.ConnectionClosed or WebExceptionStatus.KeepAliveFailure or
-                    WebExceptionStatus.ReceiveFailure or WebExceptionStatus.SendFailure or
-                    WebExceptionStatus.NameResolutionFailure or WebExceptionStatus.ProxyNameResolutionFailure or
-                    WebExceptionStatus.Timeout;
-            }
-        }
-
-        return true;
     }
 
     public static void BackupAndReplaceConfig(string configPath, string newRawContent)

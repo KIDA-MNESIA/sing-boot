@@ -198,7 +198,23 @@ public sealed class RemoteConfigUpdaterTests
     }
 
     [TestMethod]
-    public async Task EndToEnd_StartsCoreFetchesRemoteConfigBacksUpAndRestartsWithNewStdin()
+    public async Task FetchRemoteConfigAsync_PerformsSingleAttemptWithoutRetry()
+    {
+        using var directory = new TestDirectory();
+        var attempts = 0;
+        using var app = new SingBootApp(LaunchMode.Normal, directory.Path, (_, _) =>
+        {
+            attempts++;
+            return Task.FromException<string>(new HttpRequestException("Network is unavailable"));
+        });
+
+        await Assert.ThrowsExactlyAsync<HttpRequestException>(() =>
+            app.FetchRemoteConfigAsync(new Uri("https://example.test/config.json"), CancellationToken.None));
+        Assert.AreEqual(1, attempts);
+    }
+
+    [TestMethod]
+    public async Task EndToEnd_StartsCoreWithoutAutoUpdateAndManualUpdateRestartsWithNewStdin()
     {
         using var directory = new TestDirectory();
         const string remoteUrl =
@@ -219,9 +235,11 @@ public sealed class RemoteConfigUpdaterTests
         using var app = new SingBootApp(
             LaunchMode.Normal,
             directory.Path,
-            (_, _) => ++downloadAttempts == 1
-                ? Task.FromException<string>(new HttpRequestException("Network is still starting"))
-                : Task.FromResult(updatedConfig),
+            (_, _) =>
+            {
+                Interlocked.Increment(ref downloadAttempts);
+                return Task.FromResult(updatedConfig);
+            },
             conflictDetector: (_, _) => false,
             startupGracePeriodMs: 150);
 
@@ -245,12 +263,13 @@ public sealed class RemoteConfigUpdaterTests
         Assert.IsTrue(app.Start(out var startMsg), startMsg);
 
         await WaitWithTimeoutAsync(firstRunningTcs.Task, TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, downloadAttempts);
 
         Assert.IsTrue(app.TryGetRemoteConfigUrl(out var url, out var settingsMsg), settingsMsg);
         Assert.IsNotNull(url);
 
-        var downloaded = await app.FetchRemoteConfigAsync(url, CancellationToken.None, retryTransientErrors: true);
-        Assert.AreEqual(2, downloadAttempts);
+        var downloaded = await app.FetchRemoteConfigAsync(url, CancellationToken.None);
+        Assert.AreEqual(1, downloadAttempts);
         Assert.AreEqual(
             StartPreparationResult.Ready,
             app.ApplyRemoteConfigAndPrepareRestart(downloaded, out var restartPrepMsg),

@@ -131,12 +131,9 @@ internal sealed class SingBootApp : IDisposable
 
     public Task<DownloadedCoreConfig> FetchRemoteConfigAsync(
         Uri configUrl,
-        CancellationToken cancellationToken,
-        bool retryTransientErrors = false)
+        CancellationToken cancellationToken)
     {
-        return retryTransientErrors
-            ? RemoteConfigUpdater.FetchWithRetryAsync(configUrl, _remoteDownloader, cancellationToken, log: AppLog.Write)
-            : RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
+        return RemoteConfigUpdater.FetchAsync(configUrl, _remoteDownloader, cancellationToken);
     }
 
     public bool ApplyRemoteConfigOnly(DownloadedCoreConfig downloadedConfig, out string message)
@@ -200,8 +197,7 @@ internal sealed class SingBootApp : IDisposable
         {
             var elevation = PrivilegeHelper.TryRelaunchElevatedForStart(
                 CoreDisplayName,
-                out message,
-                skipConfigUpdateOnce: true);
+                out message);
             return elevation == ElevationRequestResult.Started
                 ? StartPreparationResult.RelaunchStarted
                 : StartPreparationResult.Blocked;

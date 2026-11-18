@@ -5,6 +5,10 @@ namespace SingBoot.Tests;
 [TestClass]
 public sealed class MainFormStateTests
 {
+    private static readonly string[] HandoffArgs = ["--handoff-start"];
+    private static readonly string[] AutoStartArgs = ["--auto-start"];
+    private static readonly string[] EmptyArgs = [];
+
     [TestMethod]
     public void GetStartStopAction_MapsOnlyStableStatesToActions()
     {
@@ -51,16 +55,6 @@ public sealed class MainFormStateTests
     }
 
     [TestMethod]
-    public void ConsumeShouldScheduleRemoteUpdate_SkipsOnlyFirstStartAfterPostUpdateHandoff()
-    {
-        var skipOnce = true;
-
-        Assert.IsFalse(MainForm.ConsumeShouldScheduleRemoteUpdate(ref skipOnce));
-        Assert.IsFalse(skipOnce);
-        Assert.IsTrue(MainForm.ConsumeShouldScheduleRemoteUpdate(ref skipOnce));
-    }
-
-    [TestMethod]
     public void CanUpdateConfig_AllowsOnlyStableStatesWithoutPendingOperations()
     {
         Assert.IsTrue(MainForm.CanUpdateConfig(CoreState.Running, startStopActionPending: false, isUpdatingConfig: false));
@@ -73,69 +67,57 @@ public sealed class MainFormStateTests
     }
 
     [TestMethod]
-    public void GetRemoteConfigApplyAction_DistinguishesManualAndPostStartUpdates()
+    public void GetRemoteConfigApplyAction_MapsCurrentStateForTrayUpdate()
     {
         Assert.AreEqual(
             RemoteConfigApplyAction.SaveAndRestartCore,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: false,
                 cancellationRequested: false,
-                isManualRequest: false,
-                currentState: CoreState.Running));
-        Assert.AreEqual(
-            RemoteConfigApplyAction.SaveAndRestartCore,
-            MainForm.GetRemoteConfigApplyAction(
-                closePending: false,
-                cancellationRequested: false,
-                isManualRequest: true,
                 currentState: CoreState.Running));
         Assert.AreEqual(
             RemoteConfigApplyAction.SaveOnly,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: false,
                 cancellationRequested: false,
-                isManualRequest: true,
                 currentState: CoreState.Stopped));
         Assert.AreEqual(
             RemoteConfigApplyAction.SaveOnly,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: false,
                 cancellationRequested: false,
-                isManualRequest: true,
                 currentState: CoreState.Failed));
         Assert.AreEqual(
             RemoteConfigApplyAction.None,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: false,
                 cancellationRequested: false,
-                isManualRequest: false,
-                currentState: CoreState.Stopped));
+                currentState: CoreState.Starting));
+        Assert.AreEqual(
+            RemoteConfigApplyAction.None,
+            MainForm.GetRemoteConfigApplyAction(
+                closePending: false,
+                cancellationRequested: false,
+                currentState: CoreState.Stopping));
         Assert.AreEqual(
             RemoteConfigApplyAction.None,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: true,
                 cancellationRequested: false,
-                isManualRequest: true,
                 currentState: CoreState.Running));
         Assert.AreEqual(
             RemoteConfigApplyAction.None,
             MainForm.GetRemoteConfigApplyAction(
                 closePending: false,
                 cancellationRequested: true,
-                isManualRequest: true,
                 currentState: CoreState.Running));
     }
 
-    private static readonly string[] HandoffOnlyArgs = ["--handoff-start"];
-
     [TestMethod]
-    public void ProgramArguments_SupportPostUpdateHandoffFlag()
+    public void ParseLaunchMode_MapsSupportedFlags()
     {
-        var args = PrivilegeHelper.BuildElevatedStartArguments(skipConfigUpdateOnce: true)
-            .Split(' ');
-
-        Assert.AreEqual(LaunchMode.HandoffStart, Program.ParseLaunchMode(args));
-        Assert.IsTrue(Program.ParseSkipInitialConfigUpdate(args));
-        Assert.IsFalse(Program.ParseSkipInitialConfigUpdate(HandoffOnlyArgs));
+        Assert.AreEqual(LaunchMode.HandoffStart, Program.ParseLaunchMode(HandoffArgs));
+        Assert.AreEqual(LaunchMode.AutoStart, Program.ParseLaunchMode(AutoStartArgs));
+        Assert.AreEqual(LaunchMode.Normal, Program.ParseLaunchMode(EmptyArgs));
     }
 }

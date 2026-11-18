@@ -25,8 +25,7 @@ internal static class PrivilegeHelper
 
     public static ElevationRequestResult TryRelaunchElevatedForStart(
         string coreDisplayName,
-        out string message,
-        bool skipConfigUpdateOnce = false)
+        out string message)
     {
         var exePath = Application.ExecutablePath;
         if (string.IsNullOrEmpty(exePath))
@@ -40,7 +39,7 @@ internal static class PrivilegeHelper
             var psi = new ProcessStartInfo
             {
                 FileName = exePath,
-                Arguments = BuildElevatedStartArguments(skipConfigUpdateOnce),
+                Arguments = "--handoff-start",
                 WorkingDirectory = AppContext.BaseDirectory,
                 UseShellExecute = true,
                 Verb = "runas"
@@ -60,12 +59,5 @@ internal static class PrivilegeHelper
             message = $"Unable to request administrator permission: {ex.Message}";
             return ElevationRequestResult.Failed;
         }
-    }
-
-    internal static string BuildElevatedStartArguments(bool skipConfigUpdateOnce)
-    {
-        return skipConfigUpdateOnce
-            ? "--handoff-start --skip-config-update"
-            : "--handoff-start";
     }
 }
